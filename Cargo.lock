@@ -601,6 +601,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "benilla-libfpv"
+version = "0.1.0"
+dependencies = [
+ "benilla-app",
+ "benilla-assets",
+ "benilla-buildstamp",
+ "benilla-world",
+ "bevy",
+]
+
+[[package]]
 name = "benilla-lua"
 version = "0.3.1"
 dependencies = [
