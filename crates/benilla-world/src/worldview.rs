@@ -49,6 +49,23 @@ const NEAR: f32 = crate::view::NEARCLIP_DEFAULT;
 
 /// Builds and runs the world viewer; `build` is the launcher shim's compile-time git stamp.
 pub fn run(build: BuildId) -> AppExit {
+    launch(build, None)
+}
+
+/// [`run`], plus `extend` adding a crate's own plugins, as `benilla_app::run_with` does for the
+/// client: the build is marked `extended`, and `extend` gets the viewer fully built.
+pub fn run_with(build: BuildId, extend: impl FnOnce(&mut App)) -> AppExit {
+    launch(build, Some(Box::new(extend)))
+}
+
+/// What a crate on top adds to the built viewer ([`run_with`]).
+type Extension<'a> = Box<dyn FnOnce(&mut App) + 'a>;
+
+fn launch(build: BuildId, extend: Option<Extension<'_>>) -> AppExit {
+    let build = BuildId {
+        extended: extend.is_some(),
+        ..build
+    };
     // The install resolves from the launcher's folder when its stamp names one, as the client's
     // does; this shim has no `dev` feature, so it stamps none and the viewer keeps benilla's.
     benilla_formats::set_project_folder(build.project_dir);
@@ -128,6 +145,10 @@ pub fn run(build: BuildId) -> AppExit {
 
     // After `AssetPlugin`: the loaders go into the live `AssetServer`, as in the client.
     benilla_assets::register_asset_loaders(&mut app);
+
+    if let Some(extend) = extend {
+        extend(&mut app);
+    }
 
     let exit = app.run();
     match check {
