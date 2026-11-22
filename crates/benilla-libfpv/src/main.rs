@@ -7,12 +7,15 @@
 //! benilla-libfpv --worldview --roll-test <site>                fly a site's rolling path, live
 //! benilla-libfpv --worldview --roll-test <site> --capture <dir>
 //!                                                              photograph it flat and rolled, exit
+//! benilla-libfpv --worldview --flight-test <park|wall> [--capture <dir>]
+//!                                                              a headless libfpv flight, PASS/FAIL
 //! ```
 //!
-//! Sites: `streets` (Stormwind's Trade District), `cathedral` (inside the Cathedral of Light) and
-//! `open` (Elwynn, terrain and sky). `roll_test.rs` says what a capture writes.
+//! Roll sites: `streets` (Stormwind's Trade District), `cathedral` (inside the Cathedral of
+//! Light), `open` (Westfall) and `over-city`. `roll_test.rs` and `flight_test.rs` say what each
+//! does and writes.
 
-use benilla_libfpv::roll_test;
+use benilla_libfpv::{flight_test, roll_test};
 
 use benilla_app::{AppExit, BuildId};
 
@@ -38,10 +41,14 @@ fn main() -> AppExit {
     };
 
     if cli.worldview {
-        benilla_world::worldview::run_with(build, move |app| {
-            if let Some(test) = cli.roll_test {
-                app.add_plugins(roll_test::RollTestPlugin(test));
+        benilla_world::worldview::run_with(build, move |app| match cli.test {
+            Some(Test::Roll(t)) => {
+                app.add_plugins(roll_test::RollTestPlugin(t));
             }
+            Some(Test::Flight(t)) => {
+                app.add_plugins(flight_test::FlightTestPlugin(t));
+            }
+            None => {}
         })
     } else {
         // The full client; the FPV plugin joins it in M8.
@@ -49,16 +56,22 @@ fn main() -> AppExit {
     }
 }
 
+enum Test {
+    Roll(roll_test::RollTest),
+    Flight(flight_test::FlightTest),
+}
+
 /// The command line, parsed by hand: a handful of flags.
 struct Cli {
     worldview: bool,
-    roll_test: Option<roll_test::RollTest>,
+    test: Option<Test>,
 }
 
 impl Cli {
     fn parse(args: &[String]) -> Result<Self, String> {
         let mut worldview = false;
         let mut site = None;
+        let mut scenario = None;
         let mut capture = None;
         let mut it = args.iter();
         while let Some(a) = it.next() {
@@ -71,6 +84,13 @@ impl Cli {
                             .ok_or_else(|| format!("unknown site `{name}`"))?,
                     );
                 }
+                "--flight-test" => {
+                    let name = it.next().ok_or("--flight-test wants a scenario")?;
+                    scenario = Some(
+                        flight_test::Scenario::named(name)
+                            .ok_or_else(|| format!("unknown scenario `{name}`"))?,
+                    );
+                }
                 "--capture" => {
                     capture = Some(std::path::PathBuf::from(
                         it.next().ok_or("--capture wants a folder")?,
@@ -79,15 +99,20 @@ impl Cli {
                 other => return Err(format!("unknown argument `{other}`")),
             }
         }
-        if site.is_some() && !worldview {
-            return Err("--roll-test runs in the --worldview only".into());
+        let test = match (site, scenario) {
+            (Some(_), Some(_)) => return Err("one test at a time".into()),
+            (Some(site), None) => Some(Test::Roll(roll_test::RollTest { site, capture })),
+            (None, Some(scenario)) => {
+                Some(Test::Flight(flight_test::FlightTest { scenario, capture }))
+            }
+            (None, None) if capture.is_some() => {
+                return Err("--capture wants a --roll-test or --flight-test".into())
+            }
+            (None, None) => None,
+        };
+        if test.is_some() && !worldview {
+            return Err("the tests run in the --worldview only".into());
         }
-        if capture.is_some() && site.is_none() {
-            return Err("--capture wants a --roll-test site".into());
-        }
-        Ok(Self {
-            worldview,
-            roll_test: site.map(|site| roll_test::RollTest { site, capture }),
-        })
+        Ok(Self { worldview, test })
     }
 }

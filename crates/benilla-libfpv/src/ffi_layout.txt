@@ -1,0 +1,248 @@
+S fpv_coord_system 16 4
+F fpv_coord_system.right 0
+F fpv_coord_system.up 4
+F fpv_coord_system.forward 8
+F fpv_coord_system.units_per_meter 12
+S fpv_global_config 96 8
+F fpv_global_config.struct_size 0
+F fpv_global_config.data_dir 8
+F fpv_global_config.coords 16
+F fpv_global_config.log 32
+F fpv_global_config.log_user 40
+F fpv_global_config.log_level 48
+F fpv_global_config.configurator_port 52
+F fpv_global_config.timing 56
+F fpv_global_config.sim_rate_hz 60
+F fpv_global_config.auto_pause_seconds 64
+F fpv_global_config.flags 68
+F fpv_global_config.host_name 72
+F fpv_global_config.host_build 80
+F fpv_global_config.host_url 88
+S fpv_material 12 4
+F fpv_material.restitution 0
+F fpv_material.friction 4
+F fpv_material.flags 8
+S fpv_mesh 48 8
+F fpv_mesh.positions 0
+F fpv_mesh.vertex_count 8
+F fpv_mesh.vertex_stride 12
+F fpv_mesh.indices 16
+F fpv_mesh.triangle_count 24
+F fpv_mesh.materials 32
+F fpv_mesh.material 40
+S fpv_transform 40 4
+F fpv_transform.position 0
+F fpv_transform.rotation 12
+F fpv_transform.scale 28
+S fpv_raycast_hit 24 4
+F fpv_raycast_hit.distance 0
+F fpv_raycast_hit.normal 4
+F fpv_raycast_hit.material 16
+F fpv_raycast_hit.object_id 20
+S fpv_raycast_hit_ex 60 4
+F fpv_raycast_hit_ex.struct_size 0
+F fpv_raycast_hit_ex.hit 4
+F fpv_raycast_hit_ex.flags 28
+F fpv_raycast_hit_ex.object_position 32
+F fpv_raycast_hit_ex.object_rotation 44
+S fpv_drone_desc 56 8
+F fpv_drone_desc.struct_size 0
+F fpv_drone_desc.preset 8
+F fpv_drone_desc.position 16
+F fpv_drone_desc.rotation 28
+F fpv_drone_desc.pilot_position 44
+S fpv_cargo 28 4
+F fpv_cargo.struct_size 0
+F fpv_cargo.mass 4
+F fpv_cargo.offset 8
+F fpv_cargo.radius 20
+F fpv_cargo.line_length 24
+S fpv_camera 88 4
+F fpv_camera.position 0
+F fpv_camera.rotation 12
+F fpv_camera.forward 28
+F fpv_camera.up 40
+F fpv_camera.right 52
+F fpv_camera.fov_y_degrees 64
+F fpv_camera.aspect_hint 68
+F fpv_camera.near_plane 72
+F fpv_camera.distortion_k1 76
+F fpv_camera.distortion_k2 80
+F fpv_camera.distortion_zoom 84
+S fpv_motor_state 44 4
+F fpv_motor_state.rpm 0
+F fpv_motor_state.thrust_newton 4
+F fpv_motor_state.current_amp 8
+F fpv_motor_state.temperature_c 12
+F fpv_motor_state.command 16
+F fpv_motor_state.prop_damage 20
+F fpv_motor_state.position 24
+F fpv_motor_state.spin_direction 36
+F fpv_motor_state.flags 40
+S fpv_battery_state 24 4
+F fpv_battery_state.voltage 0
+F fpv_battery_state.cell_voltage 4
+F fpv_battery_state.current_amp 8
+F fpv_battery_state.mah_drawn 12
+F fpv_battery_state.capacity_mah 16
+F fpv_battery_state.cell_count 20
+S fpv_impact 44 4
+F fpv_impact.position 0
+F fpv_impact.normal 12
+F fpv_impact.speed 24
+F fpv_impact.impulse 28
+F fpv_impact.material 32
+F fpv_impact.object_id 36
+F fpv_impact.motor_index 40
+S fpv_video_state 16 4
+F fpv_video_state.noise 0
+F fpv_video_state.breakup 4
+F fpv_video_state.signal_strength 8
+F fpv_video_state.is_digital 12
+S fpv_video_feed 2680 4
+F fpv_video_feed.flags 0
+F fpv_video_feed.system 4
+F fpv_video_feed.picture_aspect 8
+F fpv_video_feed.raster_width 12
+F fpv_video_feed.raster_height 16
+F fpv_video_feed.luma_cycles 20
+F fpv_video_feed.chroma_cycles 24
+F fpv_video_feed.subcarrier_cycles 28
+F fpv_video_feed.sharpening 32
+F fpv_video_feed.field 36
+F fpv_video_feed.field_parity 40
+F fpv_video_feed.roll 44
+F fpv_video_feed.seed 48
+F fpv_video_feed.interference 52
+F fpv_video_feed.block_errors 68
+F fpv_video_feed.softness 72
+F fpv_video_feed.frozen 76
+F fpv_video_feed.rssi_dbm 80
+F fpv_video_feed.cnr_db 84
+F fpv_video_feed.osd_style 88
+F fpv_video_feed.line_count 92
+F fpv_video_feed.lines 96
+F fpv_video_feed.chroma_boost 2656
+F fpv_video_feed.chroma_tint 2660
+F fpv_video_feed.hue_sweep 2668
+F fpv_video_feed.display_aspect 2672
+F fpv_video_feed.osd_rows 2676
+S fpv_frame 4624 8
+F fpv_frame.struct_size 0
+F fpv_frame.sim_time 8
+F fpv_frame.flags 16
+F fpv_frame.arming_disable_flags 20
+F fpv_frame.arming_disable_text 24
+F fpv_frame.position 120
+F fpv_frame.rotation 132
+F fpv_frame.velocity 148
+F fpv_frame.angular_velocity 160
+F fpv_frame.speed_kmh 172
+F fpv_frame.altitude 176
+F fpv_frame.camera 180
+F fpv_frame.chase_camera 268
+F fpv_frame.los_camera 356
+F fpv_frame.motors 444
+F fpv_frame.battery 620
+F fpv_frame.video 644
+F fpv_frame.impact_count 660
+F fpv_frame.impacts 664
+F fpv_frame.osd 1368
+F fpv_frame.osd_revision 1848
+F fpv_frame.channels 1852
+F fpv_frame.wind 1892
+F fpv_frame.portal_passes 1904
+F fpv_frame.last_portal 1908
+F fpv_frame.cargo_flags 1912
+F fpv_frame.cargo_position 1916
+F fpv_frame.cargo_velocity 1928
+F fpv_frame.video_feed 1940
+S fpv_portal 36 4
+F fpv_portal.position 0
+F fpv_portal.rotation 12
+F fpv_portal.half_width 28
+F fpv_portal.half_height 32
+S fpv_portal_link 72 4
+F fpv_portal_link.a 0
+F fpv_portal_link.b 36
+S fpv_rc_link_config 20 4
+F fpv_rc_link_config.struct_size 0
+F fpv_rc_link_config.enabled 4
+F fpv_rc_link_config.mode 8
+F fpv_rc_link_config.max_power_mw 12
+F fpv_rc_link_config.dynamic_power 16
+S fpv_rc_link_state 36 4
+F fpv_rc_link_state.struct_size 0
+F fpv_rc_link_state.enabled 4
+F fpv_rc_link_state.connected 8
+F fpv_rc_link_state.link_quality 12
+F fpv_rc_link_state.rssi_dbm 16
+F fpv_rc_link_state.snr_db 20
+F fpv_rc_link_state.tx_power_mw 24
+F fpv_rc_link_state.sensitivity_dbm 28
+F fpv_rc_link_state.packet_rate_hz 32
+S fpv_pilot_config 16 4
+F fpv_pilot_config.struct_size 0
+F fpv_pilot_config.features 4
+F fpv_pilot_config.stand_in_distance 8
+F fpv_pilot_config.stand_in_return_distance 12
+S fpv_wind 28 4
+F fpv_wind.struct_size 0
+F fpv_wind.velocity 4
+F fpv_wind.reference_height 16
+F fpv_wind.turbulence 20
+F fpv_wind.flags 24
+S fpv_wind_source 36 4
+F fpv_wind_source.position 0
+F fpv_wind_source.direction 12
+F fpv_wind_source.speed 24
+F fpv_wind_source.radius 28
+F fpv_wind_source.type 32
+S fpv_input_status 144 4
+F fpv_input_status.struct_size 0
+F fpv_input_status.source 4
+F fpv_input_status.device_name 8
+F fpv_input_status.needs_setup 136
+F fpv_input_status.device_count 140
+S fpv_control_desc 40 8
+F fpv_control_desc.struct_size 0
+F fpv_control_desc.id 4
+F fpv_control_desc.name 8
+F fpv_control_desc.label 16
+F fpv_control_desc.kind 24
+F fpv_control_desc.key 28
+F fpv_control_desc.gamepad_button 32
+S fpv_draw_vertex 20 4
+F fpv_draw_vertex.pos 0
+F fpv_draw_vertex.uv 8
+F fpv_draw_vertex.color 16
+S fpv_draw_cmd 40 8
+F fpv_draw_cmd.clip_rect 0
+F fpv_draw_cmd.texture_id 16
+F fpv_draw_cmd.index_offset 24
+F fpv_draw_cmd.index_count 28
+F fpv_draw_cmd.vertex_offset 32
+S fpv_draw_list 48 8
+F fpv_draw_list.vertices 0
+F fpv_draw_list.vertex_count 8
+F fpv_draw_list.indices 16
+F fpv_draw_list.index_count 24
+F fpv_draw_list.commands 32
+F fpv_draw_list.command_count 40
+S fpv_draw_data 32 8
+F fpv_draw_data.display_size 0
+F fpv_draw_data.list_count 8
+F fpv_draw_data.lists 16
+F fpv_draw_data.total_vertex_count 24
+F fpv_draw_data.total_index_count 28
+S fpv_texture 24 8
+F fpv_texture.width 0
+F fpv_texture.height 4
+F fpv_texture.rgba 8
+F fpv_texture.revision 16
+S fpv_configurator_info 80 4
+F fpv_configurator_info.struct_size 0
+F fpv_configurator_info.enabled 4
+F fpv_configurator_info.port 8
+F fpv_configurator_info.client_count 12
+F fpv_configurator_info.url 16

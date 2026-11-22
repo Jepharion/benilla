@@ -22,6 +22,8 @@ benilla-assets = { path = "../benilla-assets", default-features = false }
 # The engine: the worldview's `run_with`, the camera stages, the FOV and the collision ray.
 benilla-world = { path = "../benilla-world" }
 bevy.workspace = true
+# Loads libfpv.dll at runtime (the user approved it; 0.8.9 is already in the lock).
+libloading = "0.8"
 
 [build-dependencies]
 benilla-buildstamp = { path = "../benilla-buildstamp" }

@@ -8,6 +8,60 @@ Findings from reading the code, with file:line references. Newest findings go at
 
 Line numbers refer to those revisions.
 
+## M3 status: checks pass headless (2026-11-23)
+
+**The bindings** (`src/ffi.rs`):
+- **Structs:** every non-optional-build struct in `libfpv.h` is mirrored, 31 in all, `#[repr(C)]`. C enums are their 4-byte integer type, with the values as constants.
+- **Functions:** `Api` resolves all 83 DLL exports by name through `libloading` at load, then checks `fpv_abi_version() == 1`.
+- **Layout test:** `every_struct_matches_the_c_layout` compares size, alignment and every field offset against `src/ffi_layout.txt`, and fails on any C field the Rust side doesn't mirror. All match. `fpv_frame` is 4624 bytes, align 8, with `sim_time` at offset 8.
+  - The table is printed by `tools/libfpv_layout.c`, compiled with MSVC from `D:\VS\Community` against the pinned header.
+  - MSVC and the DLL's MinGW-w64 agree for these plain x86_64 C structs.
+  - Regenerating it: open a shell with `vcvars64.bat` (the VS Installer folder must be on `PATH` for its `vswhere`), run `cl /std:c11 /I <libfpv>\include /DLIBFPV_STATIC tools\libfpv_layout.c`, then run the exe by full path; cmd here won't search the current folder.
+- **Dependency:** `libloading = "0.8"`, approved by the user. It resolves to the 0.8.9 already in the lock.
+
+**The runtime** (`src/runtime.rs`, `Libfpv`):
+- **Loading:** `LIBFPV_DLL` names the DLL, else `libfpv.dll` beside the exe.
+- **Data folder:** `fpv_shared_data_dir`, which `LIBFPV_DATA_DIR` overrides. Tests point it at a scratch folder so the pilot's `%APPDATA%\libfpv` is never touched.
+- **Config:**
+  - Coords: `FPV_COORDS_Y_UP_RIGHT_HANDED`, 1.0936133 yd/m.
+  - Log: libfpv's log goes to benilla's tracing under target `libfpv`, prefixed `libfpv:`. It's thread-safe and catches panics.
+  - About tab: `host_name` "WoW FPV (benilla-libfpv)"; `host_build` is `BuildId::summary()`; `host_url` is the `origin` fork URL. Confirm that URL with the user.
+- **The raycast callback:**
+  - It's registered once at init, with a null user pointer.
+  - Each libfpv call that may cast (create, reset, tick) lends the world through a thread-local for that call only. Outside a lend it answers a miss, so PR #4's casts inside create, reset and set-callback are safe either way.
+  - It never unwinds into C (`catch_unwind`, a miss on panic).
+  - It rejects null or non-finite input, and flips the normal to face the ray origin.
+  - Unit tests cover the miss outside a call, a hit with the flipped normal, a panic, and bad input.
+- **Draw data** is copied out of libfpv's buffers each call.
+- **`src/draw_cpu.rs`** rasterises draw data on the CPU onto a captured frame (vertex colour × texture, straight alpha, clip rects). It's an instrument for x-ray captures until the M5 renderer.
+
+**Headless flights** (`src/flight_test.rs`): `benilla-libfpv --worldview --flight-test <park|wall> [--capture <dir>]`.
+- **Setup:**
+  - `FPV_TIMING_MANUAL` at a fixed 1/60 s per frame, with `NO_DEVICE_INPUT | NO_CONFIGURATOR | NO_LENS_DISTORTION`.
+  - Each frame: `fpv_input_set_channels`, then `fpv_step`, then `fpv_drone_tick`, the order `examples/minimal.c` uses.
+  - Frames are skipped until `sim_time` is 50 ms past its first reading.
+  - The drone is the default preset, "Freestyler (5" 6S)", on a fresh data folder. It's made on the Trade District street, from a ground ray.
+  - The camera follows `frame.chase_camera` (FOV through `FovZoom`, near plane through `set_nearclip`), ordered `.after(WorldStage::Input).before(CameraPoseSet)` per M1.
+- **`park` PASS:**
+  - Disarmed drift over 1–6 s: 0.000 m (limit 0.05 m).
+  - With the throttle raised while disarmed, `arming_disable_text` = `"THROTTLE"`. Throttle down, it reads `""`, and the drone arms 0.02 s after AUX1 goes on.
+  - Armed-idle drift: 0.000 m.
+- **`wall` PASS:**
+  - The wall: the nearest of 32 headings where level rays at 0.3, 0.8 and 1.5 yd all hit an upright face within 0.75 yd of each other. The drone is made 6 yd short of it and pushed with `fpv_drone_push` at 10 m/s level plus 4 m/s up.
+  - The result: an impact at 8.93 m/s, normal `[-0.36, 0.20, -0.91]` facing back. It got no closer than 5.1 cm (0.056 yd) to the face, measured every frame at its own height and line. It rebounded and rested 5.90 yd along.
+  - Two earlier wall candidates taught the finder: a street rising ahead (at 1 yd up the "wall" was the slope), and a low curb under the 0.3 yd probe (the drone stopped at it correctly, with libfpv's planes on the curb).
+- **X-ray:** with `LIBFPV_COLLISION_VIEW=xray` and `--capture`, `wall-impact-xray.png` shows the legend "no triangles: the game uses the raycast callback", yellow raycast planes on the wall's face at the strike, and planes on the floor under it.
+- **Deterministic:** two runs of each scenario gave identical per-half-second logs (park 20 lines, wall 8, 0 differing).
+- **Prebuilt check:** `fpv_minimal.exe` from the build folder also flies headless (arms at about 2.75 s sim, climbs).
+
+**Gates:** `scripts/check.sh` escalated to `gates.sh` again, because `Cargo.lock` gained `libloading`.
+- **Passed:** fmt, deviation-why, clippy, test, doctest, test-no-install, player-clippy, player-tests, enforcer, enforcer-no-install, plus `benilla-libfpv --worldview` under `WOW_WORLDVIEW_CHECK=10`.
+- **Not run:** the Python gates (doc-links, message-catalog, pass-span-lint), with no Python here, and reference, with no benilla-re checkout.
+
+**Open for later:**
+- **Q3b** (the player's own collider) can't arise in the worldview, which has no player. Settle it in M8.
+- **Materials:** not used yet. Slot 0 is libfpv's default (friction 0.3). INTEGRATION.md advises about 0.6 for stone and grass, and `FPV_MATERIAL_KILLS_PROPS` for water via benilla's Liquid layer. Decide after M4 flights.
+
 ## M2 status: done (2026-11-23)
 
 **The binaries:** the user chose a prebuilt Windows build, so WSL is skipped. It's at `C:\Users\<user>\Documents\wow-libfpv\libfpv-win64`.
@@ -25,7 +79,7 @@ Line numbers refer to those revisions.
 
 **Licence settled:** `libfpv.h:5` reads `GPL-3.0-or-later OR MIT`; a default build is GPL-3.0-or-later (`:7-11`, `README.md:295-303`). The crate's `GPL-3.0-or-later` is right.
 
-**Checked by the user:** they flew `fpv_standalone.exe` with the RadioMaster Pocket after the F8 radio setup, and checked the camera, respawn and Esc keys. The keys: with the RadioMaster Pocket. F8 is radio setup, V the camera, R respawn and Esc quit. Betaflight Configurator connects manually at `ws://localhost:5761`.
+**Checked by the user:** they flew `fpv_standalone.exe` with the RadioMaster Pocket after the F8 radio setup, and checked the camera, respawn and Esc keys. The keys: F8 is radio setup, V the camera, R respawn and Esc quit. Betaflight Configurator connects manually at `ws://localhost:5761`.
 
 ## M1 status: done, pending the user's live watch (2026-11-22)
 

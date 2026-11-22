@@ -609,6 +609,7 @@ dependencies = [
  "benilla-buildstamp",
  "benilla-world",
  "bevy",
+ "libloading",
 ]
 
 [[package]]

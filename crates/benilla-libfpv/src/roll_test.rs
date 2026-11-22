@@ -54,9 +54,9 @@ const SETTLE_SECS: f32 = 6.0;
 pub struct Site {
     pub name: &'static str,
     /// Start of the path, WoW x (north) and y (west).
-    xy: [f32; 2],
+    pub(crate) xy: [f32; 2],
     /// Where the ground probe starts, WoW z: below any roof over the start.
-    probe_z: f32,
+    pub(crate) probe_z: f32,
     /// Eye height over what the probe hits, yards.
     clearance: f32,
     /// Compass heading of the path, degrees: 0 north, 90 east. `None` takes the clearest of
@@ -249,7 +249,7 @@ const CLEAR_REACH: f32 = 200.0;
 
 /// The compass heading, of [`HEADINGS`], whose level ray from `eye` runs furthest before it hits
 /// anything, and that distance.
-fn clearest_heading(collision: &WorldCollision, eye: Vec3) -> (f32, f32) {
+pub(crate) fn clearest_heading(collision: &WorldCollision, eye: Vec3) -> (f32, f32) {
     (0..HEADINGS)
         .map(|k| {
             let heading = k as f32 * 360.0 / HEADINGS as f32;
@@ -264,7 +264,7 @@ fn clearest_heading(collision: &WorldCollision, eye: Vec3) -> (f32, f32) {
 }
 
 /// The world reads fully loaded around the camera.
-fn world_ready(progress: Option<&WorldLoadProgress>) -> bool {
+pub(crate) fn world_ready(progress: Option<&WorldLoadProgress>) -> bool {
     progress.is_some_and(|p| p.complete && p.presentable())
 }
 
