@@ -8,6 +8,25 @@ Findings from reading the code, with file:line references. Newest findings go at
 
 Line numbers refer to those revisions.
 
+## M2 status: done (2026-11-23)
+
+**The binaries:** the user chose a prebuilt Windows build, so WSL is skipped. It's at `C:\Users\<user>\Documents\wow-libfpv\libfpv-win64`.
+- **Files:** `libfpv.dll`, `libfpv.def`, `fpv_standalone.exe`, `fpv_minimal.exe`, `libfpv.LICENSE.txt` (GPL-3.0) and `README.txt`.
+- **The build:** "libfpv 1.1.3 (commit ed4739d), x86_64 Windows build, cross-compiled with MinGW-w64 posix 13.2".
+- **Verified:** the DLL's own strings carry `ed4739d72e2d04091a0e30b2a908864a00b678e0` and `1.1.3`.
+
+**The source:** `D:\benilla\libfpv`, cloned from `https://github.com/hammerill/libfpv` and checked out at `ed4739d72e2d` ("Make websocket listen on localhost only (#11)", 2026-11-22).
+- Submodules are left uninitialized. The bindings need only `include/libfpv.h`, and the DLL is prebuilt.
+
+**The header matches the DLL:**
+- `LIBFPV_ABI_VERSION 1` (`libfpv.h:68`).
+- All 83 exports in `libfpv.def` are declared in the header.
+- The header's 9 further functions are compiled only with an optional build flag (`libfpv.h:16-24`). That flag is off in this build, so M3 binds only the 83.
+
+**Licence settled:** `libfpv.h:5` reads `GPL-3.0-or-later OR MIT`; a default build is GPL-3.0-or-later (`:7-11`, `README.md:295-303`). The crate's `GPL-3.0-or-later` is right.
+
+**Checked by the user:** they flew `fpv_standalone.exe` with the RadioMaster Pocket after the F8 radio setup, and checked the camera, respawn and Esc keys. The keys: with the RadioMaster Pocket. F8 is radio setup, V the camera, R respawn and Esc quit. Betaflight Configurator connects manually at `ws://localhost:5761`.
+
 ## M1 status: done, pending the user's live watch (2026-11-22)
 
 **What was built**, on branch `libfpv`:
@@ -61,7 +80,7 @@ Line numbers refer to those revisions.
   - reference: no `benilla-re` checkout.
 - **Data-gated tests:** the gate found the install but no addon corpus, so it didn't set `BENILLA_REQUIRE_DATA`.
 
-**Environment found for M2:** WSL isn't installed (`wsl.exe -l` prints only the install help), and no libfpv clone is on `D:\`. M2 needs both. Installing WSL is the user's call.
+**Environment for M2:** WSL isn't installed and isn't needed: the user supplied a prebuilt Windows build (see M2).
 
 ## M0 status: done (2026-11-22)
 
