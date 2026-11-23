@@ -48,6 +48,18 @@ const SETTLE_SECS: f32 = 6.0;
 /// The most a disarmed, parked drone may wander, metres.
 const PARK_TOLERANCE_M: f32 = 0.05;
 
+/// The drop tests: when the drone is lifted and let go (simulated seconds), and from how high
+/// over the spawn (metres). Free fall from 10 m takes sqrt(2·10/9.81) = 1.428 s without air.
+const DROP_AT: f64 = 1.5;
+const DROP_HEIGHT_M: f32 = 10.0;
+const GRAVITY: f32 = 9.81;
+
+/// `LIBFPV_TEST_THREADED=1`: run a test as live flight does, libfpv on its own real-time thread
+/// and each frame presented at its real duration, rather than in deterministic manual steps.
+fn threaded() -> bool {
+    std::env::var("LIBFPV_TEST_THREADED").as_deref() == Ok("1")
+}
+
 /// Where the tests fly: a Trade District street.
 const SITE: &str = "streets";
 
@@ -60,6 +72,10 @@ pub enum Scenario {
     Park,
     Wall,
     Climb,
+    /// Released from 10 m, disarmed.
+    Drop,
+    /// Released from 10 m, armed at idle.
+    DropArmed,
 }
 
 impl Scenario {
@@ -68,6 +84,8 @@ impl Scenario {
             "park" => Some(Self::Park),
             "wall" => Some(Self::Wall),
             "climb" => Some(Self::Climb),
+            "drop" => Some(Self::Drop),
+            "drop-armed" => Some(Self::DropArmed),
             _ => None,
         }
     }
@@ -77,7 +95,13 @@ impl Scenario {
             Self::Park => "park",
             Self::Wall => "wall",
             Self::Climb => "climb",
+            Self::Drop => "drop",
+            Self::DropArmed => "drop-armed",
         }
+    }
+
+    fn is_drop(self) -> bool {
+        matches!(self, Self::Drop | Self::DropArmed)
     }
 
     /// Simulated seconds it runs for.
@@ -86,6 +110,7 @@ impl Scenario {
             Self::Park => 10.0,
             Self::Wall => 4.0,
             Self::Climb => 5.0,
+            Self::Drop | Self::DropArmed => 4.5,
         }
     }
 }
@@ -150,6 +175,8 @@ struct Flight {
     ch: [f32; ffi::FPV_CHANNEL_COUNT],
     pushed: bool,
     shot: bool,
+    /// Seconds this frame presented (threaded), else [`DT`].
+    dt: f32,
     /// Climb: shots taken so far, of [`CLIMB_SHOTS`].
     climb_shots: usize,
     /// Climb: what the FPV camera's near plane probes chose this frame.
@@ -180,6 +207,21 @@ struct Log {
     climb_top: f32,
     cam_offset_max: f32,
     ground_cam: Option<(Vec3, Vec3, crate::camera::NearChoice, f32)>,
+    /// Drops: when the fall started (simulated seconds) and from what height (yards), when it
+    /// first touched down, the height samples every 0.1 s, the camera's last rotation, and its
+    /// fastest turn between two frames during the fall (degrees per second).
+    fall_start: Option<(f64, f32)>,
+    landed: Option<f64>,
+    fall_samples: Vec<(f64, f32)>,
+    last_cam: Option<Quat>,
+    cam_rate_max: f32,
+    cam_rate_sum: f32,
+    cam_rate_n: u32,
+    /// Drops: the camera's last position, and in the air its largest step between frames and
+    /// the largest stray of that step from velocity × frame time (metres).
+    last_eye: Option<Vec3>,
+    eye_step_max: f32,
+    eye_stray_max: f32,
     /// The first impact's normal and speed.
     impact: Option<(Vec3, f32)>,
     impacts: u32,
@@ -250,9 +292,25 @@ fn drive(
                 }
                 flight.pushed = true;
             }
-            let stepped = fpv
-                .step(DT)
-                .and_then(|()| fpv.tick(DT, &mut run.frame, &mut world));
+            if scenario.is_drop() && !flight.pushed && flight.t >= DROP_AT {
+                // Released level, at rest, DROP_HEIGHT_M over the spawn. A reset keeps the drone
+                // armed while the arm switch stays on.
+                let up = flight.spawn + Vec3::Y * DROP_HEIGHT_M * UNITS_PER_METER;
+                let facing = Quat::from_rotation_arc(Vec3::NEG_Z, flight.dir);
+                if let Err(e) = fpv.reset_drone(up, facing, &mut world) {
+                    error!("libfpv: {e}");
+                }
+                flight.pushed = true;
+            }
+            // Threaded (as in live flight): libfpv's own thread steps it, and the tick presents
+            // it at this frame's real time; the test's clock is then the simulation's own.
+            let dt = if threaded() { time.delta_secs() } else { DT };
+            let stepped = if threaded() {
+                fpv.tick(dt, &mut run.frame, &mut world)
+            } else {
+                fpv.step(DT)
+                    .and_then(|()| fpv.tick(DT, &mut run.frame, &mut world))
+            };
             if let Err(e) = stepped {
                 error!("libfpv: TEST {} FAIL — {e}", scenario.name());
                 run.phase = Phase::Done {
@@ -261,20 +319,26 @@ fn drive(
                 };
                 return;
             }
-            flight.t += DT as f64;
+            if threaded() {
+                let first = *flight.first_sim.get_or_insert(run.frame.sim_time);
+                flight.t = run.frame.sim_time - first;
+                flight.dt = dt;
+            } else {
+                flight.t += DT as f64;
+            }
 
             // The overlay must render every frame: the collision view draws through it.
             if let Ok(win) = window.single() {
                 fpv.set_overlay_display(win.width(), win.height(), 1.0);
             }
-            let overlay = fpv.overlay(DT);
+            let overlay = fpv.overlay(dt);
 
             let first = *flight.first_sim.get_or_insert(run.frame.sim_time);
             if run.frame.sim_time < first + STARTUP_SECS {
                 return;
             }
             let frame = &*run.frame;
-            if scenario == Scenario::Climb {
+            if scenario == Scenario::Climb || scenario.is_drop() {
                 flight.near = crate::camera::apply(
                     &frame.camera,
                     &mut cam,
@@ -394,7 +458,7 @@ fn start(
     let mut fpv = Libfpv::init(
         &dll_path(),
         &InitOptions {
-            manual_timing: true,
+            manual_timing: !threaded(),
             flags: ffi::FPV_INIT_NO_DEVICE_INPUT
                 | ffi::FPV_INIT_NO_CONFIGURATOR
                 | ffi::FPV_INIT_NO_LENS_DISTORTION,
@@ -424,6 +488,7 @@ fn start(
         ch: [0.0, 0.0, -1.0, 0.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0],
         pushed: false,
         shot: false,
+        dt: DT,
         climb_shots: 0,
         near: Default::default(),
     })
@@ -456,6 +521,7 @@ fn script(scenario: Scenario, flight: &mut Flight) {
     flight.ch[4] = match scenario {
         Scenario::Park if flight.t >= 6.0 => 1.0,
         Scenario::Climb if flight.t >= 1.0 => 1.0,
+        Scenario::DropArmed if flight.t >= 0.5 => 1.0,
         _ => -1.0,
     };
     if scenario == Scenario::Climb {
@@ -522,6 +588,55 @@ fn measure(
             if armed && log.armed_at.is_none() {
                 log.armed_at = Some(flight.t);
                 log.arm_text_after = Some(frame.arming_disable_text());
+            }
+        }
+        Scenario::Drop | Scenario::DropArmed => {
+            if armed && log.armed_at.is_none() {
+                log.armed_at = Some(flight.t);
+            }
+            if flight.pushed && log.fall_start.is_none() {
+                log.fall_start = Some((flight.t, pos.y));
+            }
+            if let Some((t0, y0)) = log.fall_start {
+                let since = flight.t - t0;
+                let down = frame.flags & ffi::FPV_DRONE_ON_GROUND != 0 || frame.impact_count > 0;
+                if log.landed.is_none() && since > 0.05 && down {
+                    log.landed = Some(since);
+                    info!(
+                        "libfpv: touched down {since:.3} s after release, fell {:.2} m",
+                        (y0 - pos.y) / UNITS_PER_METER
+                    );
+                }
+                let in_air = log.landed.is_none();
+                if in_air
+                    && log
+                        .fall_samples
+                        .last()
+                        .is_none_or(|s| since - s.0 >= 0.1 - 1e-6)
+                {
+                    log.fall_samples
+                        .push((since, (y0 - pos.y) / UNITS_PER_METER));
+                }
+                // The FPV camera's turn rate between frames, while in the air.
+                let q = Quat::from_array(frame.camera.rotation).normalize();
+                if let (true, Some(prev)) = (in_air && since > 0.0, log.last_cam) {
+                    let rate = prev.angle_between(q).to_degrees() / flight.dt.max(1e-4);
+                    log.cam_rate_max = log.cam_rate_max.max(rate);
+                    log.cam_rate_sum += rate;
+                    log.cam_rate_n += 1;
+                }
+                log.last_cam = Some(q);
+                // How far the camera's step this frame strays from the frame's own velocity
+                // times its duration: even presentation keeps it near zero, a stutter does not.
+                let eye = Vec3::from_array(frame.camera.position);
+                let vel = Vec3::from_array(frame.velocity);
+                if let (true, Some(prev)) = (in_air && since > 0.05, log.last_eye) {
+                    let stray = ((eye - prev) - vel * flight.dt).length() / UNITS_PER_METER;
+                    log.eye_stray_max = log.eye_stray_max.max(stray);
+                    let step = (eye - prev).length() / UNITS_PER_METER;
+                    log.eye_step_max = log.eye_step_max.max(step);
+                }
+                log.last_eye = Some(eye);
             }
         }
         Scenario::Climb => {
@@ -612,6 +727,41 @@ fn verdict(scenario: Scenario, flight: &Flight, log: &Log) -> bool {
                 log.arm_text_before.as_deref().unwrap_or(""),
                 log.arm_text_after.as_deref().unwrap_or(""),
                 m(log.armed_idle_max)
+            );
+            pass
+        }
+        Scenario::Drop | Scenario::DropArmed => {
+            let fell = log.fall_start.map_or(0.0, |(_, y0)| m(y0 - flight.spawn.y));
+            // Free fall in vacuum from the height it actually fell.
+            let vacuum = (2.0 * fell / GRAVITY).sqrt() as f64;
+            let ratio = log.landed.map(|t| t / vacuum);
+            // Gravity right: no faster than vacuum, and drag adding at most a quarter.
+            let gravity_ok = ratio.is_some_and(|r| (0.97..=1.25).contains(&r));
+            let armed_ok = (scenario == Scenario::Drop) != log.armed_at.is_some();
+            let pass = gravity_ok && armed_ok;
+            let curve: Vec<String> = log
+                .fall_samples
+                .iter()
+                .filter(|(t, _)| (t * 10.0).round() as i64 % 2 == 0)
+                .map(|(t, d)| {
+                    let free = 0.5 * GRAVITY * (*t as f32).powi(2);
+                    format!("{t:.1}s {d:.2}m (free {free:.2})")
+                })
+                .collect();
+            info!(
+                "libfpv: TEST {} {} — fell {fell:.2} m in {} (vacuum {vacuum:.3} s, ratio {}), \
+                 armed {}; camera turn rate in the air mean {:.0}°/s max {:.0}°/s; camera step \
+                 max {:.3} m, stray from velocity × dt max {:.4} m; fallen: {}",
+                scenario.name(),
+                if pass { "PASS" } else { "FAIL" },
+                log.landed.map_or("never".into(), |t| format!("{t:.3} s")),
+                ratio.map_or("-".into(), |r| format!("{r:.3}")),
+                log.armed_at.is_some(),
+                log.cam_rate_sum / log.cam_rate_n.max(1) as f32,
+                log.cam_rate_max,
+                log.eye_step_max,
+                log.eye_stray_max,
+                curve.join(", ")
             );
             pass
         }

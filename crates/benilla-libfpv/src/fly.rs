@@ -3,7 +3,8 @@
 //! game) and the Configurator on. The drone starts on the ground at a site, and the world camera
 //! is its FPV camera.
 //!
-//! `benilla-libfpv --worldview --fly [site]`. Keys: R respawns (repair, then back to the start).
+//! `benilla-libfpv --worldview --fly [site]`. Keys: R respawns (repair, then back to the start);
+//! P logs a MARK line with the drone's position and heading, for reporting a spot.
 //! The OSD and the F8 overlay come in M5, the lens in M6.
 
 use benilla_assets::coords::{bevy_to_wow, wow_to_bevy};
@@ -128,6 +129,16 @@ fn drive(
         }
         Phase::Flying => {
             let Some(fpv) = fly.fpv.as_mut() else { return };
+            if keys.just_pressed(KeyCode::KeyP) {
+                // Marks a spot for a report: where the drone is, and which way it faces.
+                let pos = Vec3::from_array(fly.frame.position);
+                let fwd = Vec3::from_array(fly.frame.camera.forward);
+                info!(
+                    "libfpv: MARK drone at WoW {:.1?}, camera heading {:.0}°",
+                    bevy_to_wow(pos),
+                    fwd.x.atan2(-fwd.z).to_degrees().rem_euclid(360.0)
+                );
+            }
             if keys.just_pressed(KeyCode::KeyR) {
                 let (p, q) = (fly.spawn.translation, fly.spawn.rotation);
                 if let Err(e) = fpv
@@ -204,7 +215,7 @@ fn start(
     fpv.create_drone(ground, facing, behind, world)?;
     info!(
         "libfpv: drone on the ground at WoW {:.2?}, heading {heading:.0}° — arm and fly; R \
-         respawns",
+         respawns, P marks the spot in this log",
         bevy_to_wow(ground)
     );
     Ok((

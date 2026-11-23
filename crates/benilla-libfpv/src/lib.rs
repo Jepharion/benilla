@@ -7,3 +7,4 @@ pub mod flight_test;
 pub mod fly;
 pub mod roll_test;
 pub mod runtime;
+pub mod scan;

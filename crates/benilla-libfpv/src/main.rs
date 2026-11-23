@@ -10,13 +10,15 @@
 //! benilla-libfpv --worldview --flight-test <park|wall|climb> [--capture <dir>]
 //!                                                              a headless libfpv flight, PASS/FAIL
 //! benilla-libfpv --worldview --fly [site]                      fly with the radio (default streets)
+//! benilla-libfpv --worldview --scan x0,y0,x1,y1[,z]            survey the drone's collision in an area
+//! benilla-libfpv --worldview --probe x,y,z,heading[,shot.png]  rays and a photo along a path
 //! ```
 //!
 //! Sites: `streets` (Stormwind's Trade District), `cathedral` (inside the Cathedral of Light),
 //! `open` (Westfall) and `over-city`. `roll_test.rs`, `flight_test.rs` and `fly.rs` say what each
 //! does and writes.
 
-use benilla_libfpv::{flight_test, fly, roll_test};
+use benilla_libfpv::{flight_test, fly, roll_test, scan};
 
 use benilla_app::{AppExit, BuildId};
 
@@ -52,6 +54,12 @@ fn main() -> AppExit {
             Some(Test::Fly(site)) => {
                 app.add_plugins(fly::FlyPlugin(site));
             }
+            Some(Test::Probe(p)) => {
+                app.add_plugins(scan::ProbePlugin(p));
+            }
+            Some(Test::Scan(s)) => {
+                app.add_plugins(scan::ScanPlugin(s));
+            }
             None => {}
         })
     } else {
@@ -64,6 +72,8 @@ enum Test {
     Roll(roll_test::RollTest),
     Flight(flight_test::FlightTest),
     Fly(roll_test::Site),
+    Scan(scan::Scan),
+    Probe(scan::Probe),
 }
 
 /// The command line, parsed by hand: a handful of flags.
@@ -79,10 +89,25 @@ impl Cli {
         let mut scenario = None;
         let mut capture = None;
         let mut fly = None;
+        let mut survey = None;
+        let mut probe = None;
         let mut it = args.iter().peekable();
         while let Some(a) = it.next() {
             match a.as_str() {
                 "--worldview" => worldview = true,
+                "--probe" => {
+                    let spec = it.next().ok_or("--probe wants x,y,z,heading[,shot.png]")?;
+                    probe = Some(scan::Probe::parse(spec).ok_or_else(|| {
+                        format!("--probe wants x,y,z,heading[,shot.png], not `{spec}`")
+                    })?);
+                }
+                "--scan" => {
+                    let line = it.next().ok_or("--scan wants x0,y0,x1,y1")?;
+                    survey = Some(
+                        scan::Scan::parse(line)
+                            .ok_or_else(|| format!("--scan wants x0,y0,x1,y1, not `{line}`"))?,
+                    );
+                }
                 "--fly" => {
                     // An optional site name; a following flag is not one.
                     let name = it
@@ -115,9 +140,17 @@ impl Cli {
                 other => return Err(format!("unknown argument `{other}`")),
             }
         }
-        let modes = [site.is_some(), scenario.is_some(), fly.is_some()];
+        let modes = [
+            site.is_some(),
+            scenario.is_some(),
+            fly.is_some(),
+            survey.is_some(),
+            probe.is_some(),
+        ];
         if modes.iter().filter(|&&m| m).count() > 1 {
-            return Err("one of --roll-test, --flight-test and --fly at a time".into());
+            return Err(
+                "one of --roll-test, --flight-test, --fly, --scan and --probe at a time".into(),
+            );
         }
         if capture.is_some() && site.is_none() && scenario.is_none() {
             return Err("--capture wants a --roll-test or --flight-test".into());
@@ -128,7 +161,7 @@ impl Cli {
                 Some(Test::Flight(flight_test::FlightTest { scenario, capture }))
             }
             (.., Some(site)) => Some(Test::Fly(site)),
-            _ => None,
+            _ => survey.map(Test::Scan).or(probe.map(Test::Probe)),
         };
         if test.is_some() && !worldview {
             return Err("the tests and --fly run in the --worldview only".into());

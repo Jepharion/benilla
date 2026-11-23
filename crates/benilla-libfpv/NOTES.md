@@ -8,7 +8,7 @@ Findings from reading the code, with file:line references. Newest findings go at
 
 Line numbers refer to those revisions.
 
-## M4 status: built and pre-checked, waiting on the user's flight (2026-11-23)
+## M4 status: done, the user flew it (2026-11-23)
 
 **The FPV camera** (`src/camera.rs`, `camera::apply`):
 - **Transform:** `frame.camera` position, and rotation as-is (it maps the host's −Z to the view, which is Bevy's camera rotation).
@@ -42,11 +42,40 @@ Line numbers refer to those revisions.
 
 **What the user checks:** fly Stormwind offline with the Pocket, and report on feel, latency and popping. There's no OSD or F8 overlay yet (M5) and no lens (M6).
 
+**The user's first flight report** (2026-11-23), on the default 5" preset (their last choice):
+- **Feel:** "floaty", especially when dropping it. Falling armed, the camera shakes or jitters now and then. Falling disarmed, it shakes a lot more, which may be the tumble. To measure: drop timing against free fall, and the camera's frame-to-frame motion.
+- **Popping:** high over Stormwind, buildings pop in and out. Outside the city you can fly high and nothing pops, though the inner city pops when looked at. This is I-1's claim, which the user judges faithful (below).
+- **Latency:** "felt fine, no noticeable lag".
+- **Collision bug, I-2:** see below.
+- **Answers:** the About URL `github.com/Jepharion/benilla` is the user's fork (keep it), and the git author `Cristi` stays.
+
+**Investigating the report:**
+- **Gravity is right.** `--flight-test drop` / `drop-armed` lift the drone 10 m and let it go:
+  - Disarmed: 10.05 m in 1.450 s, against 1.431 s in a vacuum (ratio 1.013). The 0.2 s samples follow ½gt² within a few cm.
+  - Armed at idle: 1.483 s (ratio 1.037); the idling props add drag.
+  - In threaded timing (`LIBFPV_TEST_THREADED=1`: libfpv's own thread, each frame presented at its real duration, as in `--fly`): 1.466 s and 1.499 s.
+- **The presentation is smooth.** Threaded, in the air:
+  - The camera turns at 0–2°/s in a level drop.
+  - Each frame's camera step strays at most 4.3 mm from velocity × frame time, and the largest step (0.213 m) is one 60 fps frame at landing speed, so there was no hitch.
+  - So the jitter the user saw is the flight itself: the tumble disarmed, prop wash armed at low throttle, in acro (`angle false` in the user's log).
+  - "Floaty" fits scale (Stormwind is oversized) and the unwidened 100° view with no lens (M6). Revisit the feel after M6.
+- **I-2, the gatehouse walls. Open, deferred by the user.**
+  - **Where:** the user marked it with P while flying through the walls. WoW [-8893.3, 570.7, 111.0], [-8900.5, 564.6, 108.0], [-8911.5, 554.6, 107.5], heading 143°: the gatehouse at the end of the Valley of Heroes, about 12–15 yd over the street.
+  - **What the probe found:** `--probe` from the marks finds no face ahead at the drone's height. The photo from mark 2 shows the gatehouse's sloped stone roofs, a wooden palisade, a beam and a banner.
+  - **The user's read:** it's the stone walls, which players can't reach in the game, so their collision is probably missing in the data. There are likely many such places.
+  - **What it isn't:** Q3. A trial `ray_solid` (default + Walk + Camera layers) found the same faces as `ray_body` there, and only 2 more covered points in a 24 × 24 survey near the Valley, so it was reverted and benilla-world is unchanged. Q3 stays open.
+  - **Likely fix later:** give the drone collision built from the render geometry where the collision data has none.
+- **Tools added:**
+  - `--fly`: **P** logs a `MARK` line with the drone's position and heading.
+  - `--scan x0,y0,x1,y1[,z]`: covered spots on a 3 yd grid, from up rays starting at z, with wall counts in 8 directions.
+  - `--probe x,y,z,heading[,shot.png]`: level rays from a spot at five heights, plus a photo.
+
 **Gates this round:**
 - `check.sh` now always escalates to the full chain, because this branch's `Cargo.lock` differs from `main` (since M1).
 - The first run failed `benilla-app` `sound::mixer::tests::a_streamed_bed_loops_seamlessly`. That's upstream code, a timing test that waits in 1 ms sleeps. It passed 5 of 5 alone, so it's flaky under the full suite's load. The chain was rerun.
 - **The rerun passed:** fmt, deviation-why, clippy, test (the mixer test included), doctest, test-no-install, player-clippy, player-tests, enforcer, enforcer-no-install, plus `benilla-libfpv --worldview`.
 - **Not run:** the Python gates and reference, as before.
+- **Follow-up round** (drop tests, `--scan`, `--probe`, the P key, `ray_solid` reverted): the full chain passed again through test-no-install, then player-clippy, player-tests and the three enforcers. The Python gates were not run.
 
 ## M3 status: checks pass headless (2026-11-23)
 
@@ -156,6 +185,8 @@ Line numbers refer to those revisions.
 - Read from the diff images: the 45° residue is edge and alpha-test foliage outlines from bilinear resampling. No object is missing or added in any rolled pair, and sky, clouds, fog and the horizon stay consistent.
 - **Roll needs no fix in Benilla.** This confirms Q4 from source.
 - Not yet covered: weather, particles and billboard-heavy scenes; none was in frame. Check them in M4 live flights.
+
+**Closed: judged faithful (2026-11-23).** The user checked period footage of the 1.12 client: the city fogs out from above or from far away, as benilla draws it. So it's not a benilla bug, and there's nothing to raise upstream.
 
 **Open issue I-1, the camera over Stormwind drawn as fog.** This is the M0 blue screen, now measured. It's Benilla's own, pre-existing, and not caused by roll (the over-city pairs diff as clean as the rest).
 - **Measured:** from z 400 down to the street (z 96.6) at (-8830, 620), `CameraInteriorClaim` is group 285 of `world/wmo/azeroth/buildings/stormwind/stormwind.wmo`.
