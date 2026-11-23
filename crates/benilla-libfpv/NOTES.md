@@ -8,6 +8,103 @@ Findings from reading the code, with file:line references. Newest findings go at
 
 Line numbers refer to those revisions.
 
+## M6 status: done, the user checked the lens; the video feed and the pilot fix wait on their check (2026-11-23)
+
+**The user's check of the lens:**
+- It "seems good". The F8 fisheye strength works.
+- **Feel:** "think it feels better", to be investigated. The user flies lighter quads than this default 5" (their last preset), so the inertia may feel odd. The Air65 II preset (closest to their Air75 II) is in F8 > Drone; a tuned Air75 II preset is M9.
+- **Asked for** the analog static the standalone shows: libfpv's video feed, M6's optional item. Done below.
+- **I-3:** the user reads it as the camera on the ground clipping into it at the wider FOV, "not a big deal", since it doesn't happen in flight. Low priority.
+
+**The lens and the video feed** (`src/video.rs`, `src/video_signal.wgsl`, `src/video_present.wgsl`), a port of `docs/renderers/fpv_video_gl3.h` line for line (INTEGRATION.md "Lens distortion" and "The video feed"). It replaced the first lens pass (`lens.wgsl`), and `lens.rs` keeps only the FOV fit:
+- **`video::view_for(frame, screen aspect, OsdChipCache)`** gives a `VideoView` (an extracted component on the world camera; `camera::set_view` adds it or removes it) and the FOV to render at.
+  - **Modes:** lens only (no feed flags), analog, or digital, each its own pipeline (shader defs `VIDEO_ANALOG`, `VIDEO_DIGITAL`), as in the reference.
+  - **FOV:** with the resolution effect on, libfpv's own FOV, the lens working on the camera's aspect (INTEGRATION.md: "so the FOV is exact"). Otherwise M6's `lens::fit` recompute for the screen's aspect.
+  - **The OSD chip's picture:** 360 × rows·18, built on the CPU from `frame.osd` and a copy of the OSD font, as `fpv_video_gl3__osd_chip` does, and rebuilt only when the grid, the row count or the font changes (unit-tested).
+- **The node** sits on the world camera, between `Tonemapping` and `EndMainPassPostProcessing` (after benilla's FFXGlow, `ffx_glow.rs:1200-1208`):
+  - **The signal:** into one of two `Rgba8Unorm` textures at the feed's raster (720 × 240/288 analog, the mode's pixels digital, the screen's with the resolution off). Only when the field (or digital frame) changes, the flags change, or there is no signal yet, so the feed runs at the link's rate. The other texture is the history digital breakup reuses, and a frozen digital frame is held.
+  - **Uploads:** the line table (2 × `line_count` texels) for analog noise, and the OSD picture when its `Arc` is new.
+  - **The goggles:** every frame, the signal into the picture's rectangle, `display_aspect` (or `picture_aspect`) fitted to the screen with black bars, the "sharp bilinear" scaler, and an analog field bobbed half a line on odd parity.
+  - **State lives in a `prepare` system** (`RenderSystems::PrepareResources`): the plan, the current texture, and the uniforms laid out by `ShaderType` as the WGSL structs. The node only encodes the two passes, binding this frame's `post_process_write` source as the scene.
+- **Colour space:** the reference does its signal maths on the gamma-encoded picture a GL framebuffer holds. The scene here is linear HDR, so the signal shader encodes it to sRGB as it samples, and the goggles shader decodes it back.
+- **Coordinates:** the GL maths is kept (uv and p y-up, lines from the top). Only the samples flip, with `textureSampleLevel` throughout (non-uniform control flow) and `textureLoad` for the line table and the OSD.
+- **The analog OSD in the signal:** `FPV_VIDEO_FEED_OSD_IN_SIGNAL` puts it in the picture, and then `fly::publish` doesn't draw it again over the top.
+- **Live flight** passes `FPV_INIT_VIDEO_FEED`. The pilot turns the effects on or off in F8 > Camera > "Video feed"; both are on by default. Its log line adds the feed: system, effects, raster, RSSI and CNR.
+- **Pipelines** are queued at `RenderStartup`: three signal modes, plus present for HDR and for 8-bit.
+
+**Pre-check, `--flight-test hud --capture`** (the hud test now passes `FPV_INIT_VIDEO_FEED`), default 5" preset, NTSC analog, 1280×720:
+- **The picture:** a 4:3 analog picture with black bars at the sides. Soft analog resolution, colour bleeding along the lines, the camera's edge halos, and the barrel lens. It renders at libfpv's 112.5° (the projection reads 112.48°).
+- **The OSD:** in the signal, `ARMED` and the elements in the chip's blocky white look, softened with the picture. In `hud-overlay.png` the F8 window is undistorted over it.
+- **The noise, with `LIBFPV_TEST_PILOT_M` putting the pilot behind the drone** in the Trade District street: 30, 80 and 130 m show the picture with a faint grain; 170, 250 and 1500 m show the receiver's full snow. The obstruction through the buildings makes the fade steep, so a still didn't catch the torn, sparkling middle; the user sees it live.
+- **Without the resolution effect:** the M6 lens-only path is the same shader in mode 0.
+
+**The user's first look at the feed: "unpilotable pretty fast", and the standalone only showed the effects "occasionally, without the range limit".** The link is modelled from the pilot (`fpv_drone_set_pilot_position`, the receiver), and `--fly` left the pilot 2 yd behind the spawn. Stormwind's walled streets block the link within a street or two (the stills above: snow from 170 m behind the buildings).
+- **The standalone** sets a pilot only with `--pilot X,Z` (`examples/standalone/main.cpp:29,656,809-812`) and flies an open, flat level, so the link rarely leaves line of sight.
+- **The fix, in `fly.rs`:** the pilot follows the drone. Whenever the drone is more than `PILOT_FOLLOW_M` (30 m) from the pilot, the pilot moves to the ground under it (a body ray down, 500 yd reach). The link then fades and breaks up from walls and corners close by, as in a small level, and never runs out of range.
+  - **Y**, or the overlay's Fly tab button "Move the pilot here (Y)", moves the pilot there now (libfpv's standard "move here", CLAUDE.md "Standard keys").
+  - **The Fly tab's second button** toggles following off, for a pilot who wants range to matter (LOS flying from one spot, M8's stand-in). `fpv_overlay_set_action` / `fpv_overlay_poll_action`.
+  - **Not checked live:** the follow needs a moving drone, so the user checks it in flight.
+
+**M6's first lens pass,** kept for the record: `lens::fit` at 16:9 rendered at 114.5° against libfpv's 112.5° at its 4:3 hint. The guide's "about 119°" depends on the preset and the fisheye strength; the formula is unit-tested.
+
+**Open issue I-3, fog-coloured ground at the bottom corners on the ground. Found here, not fixed.** With the drone parked (camera about 6.6 cm over the street) and the wider FOV, the bottom tenth of the frame shows a flat fog colour, `[84, 135, 164]`, instead of the street.
+- In Stormwind it's a straight horizontal cut. At Westfall (`LIBFPV_TEST_SITE=open`, drone rolled on a hillside) it's a straight cut parallel to the tilted horizon.
+- **Measured, at the same pose, without the warp:**
+  - Near 0.33 yd or 0.01 yd: the band is identical. So it's not the near plane: the projection reads the set near (0.057 yd), and the world shaders only discard at the far clip (`terrain.wgsl:169-175`, `static_gx.wgsl:278-283`).
+  - FOV 100° (M4's): no band. FOV 114.5°: the band.
+  - No liquid under the eye (`WOW_FOG_DUMP`: "no surface covers the eye's XY"). The scene fog there is `[77, 120, 143]`, start 88, end 350.
+  - The lens warp only curves the cut.
+- **Reading:** rays more than roughly 26° below horizontal, hitting ground a few cm away, show fog instead of the ground. M4's 100° bottom edge stopped at about 25°.
+- **Not explained yet:** which benilla pass draws fog there. Candidates are the sky or fog elements drawn over close ground; not read.
+- **Impact:** in flight the bottom rays reach distant ground and the frames are clean (`hud-overlay.png`, airborne). The user confirms it doesn't show while flying. Low priority.
+
+## M5 status: done, the user checked it (2026-11-23)
+
+**The renderer** (`src/draw.rs`, `src/draw.wgsl`), after `docs/renderers/fpv_render_gl3.h`. It was rewritten after the user's check (below):
+- **The camera:** a `Camera2d` at order 100, marked `FpvOverlayCamera`, with `Tonemapping::None` (tonemapping would shift the UI's colours) and `Msaa::Off`. It clears its own texture to transparent, then composites onto the window with `PREMULTIPLIED_ALPHA_BLENDING`. Straight-alpha triangles drawn over transparent black leave premultiplied colour.
+- **The node:** `FpvOverlayNode` sits on the Core2d graph between `EndMainPass` and `StartMainPassPostProcessing`, and runs only on that camera.
+  - It uploads libfpv's vertices raw. `fpv_draw_vertex` is a GPU vertex layout as it stands: `Float32x2` position, `Float32x2` uv and `Unorm8x4` colour, a 20-byte stride (unit-tested).
+  - Every list goes into one vertex buffer and one index buffer.
+  - Each command draws with a real scissor rect (its clip rect scaled to the target's pixels), its texture's bind group and its base vertex.
+- **The blend:** libfpv's own, `SrcAlpha / OneMinusSrcAlpha` on colour and `One / OneMinusSrcAlpha` on alpha.
+- **Colour:**
+  - The vertex shader linearises the sRGB bytes of the colour.
+  - The textures are `Rgba8UnormSrgb`, uploaded once per `fpv_texture_get` revision. The OSD font uses a nearest sampler, as the reference does; the overlay font is linear.
+  - Blending runs in linear space, where the GL reference blends in sRGB, so edges are slightly softer. Accepted.
+- **The pipeline:** queued at `RenderStartup`, so it compiles behind the loading, never on the frame that first shows the overlay.
+- **The draw:** `fly::publish` fills `FpvDraw` each frame: the OSD (`fpv_osd_draw_data`, in the pilot's style from `frame.video_feed.osd_style`, analog for an unknown value), then the overlay (`fpv_overlay_render`, every frame). Uploads are cleared in `First`, after the render world extracted them. `fpv_overlay_set_display` gets the window's logical size and its scale factor; M4 passed 1.0.
+- **Why it was rewritten:** the first version registered `Material2dPlugin::<FpvDrawMaterial>` and clipped in its shader. Benilla's gate test `pipe_warm::menagerie::every_material_lane_has_a_warm_contributor` scans every `.rs` file in the workspace for material-plugin registrations, and a lane without a pipe_warm contributor fails it, since its first sight is a render-thread stall. The crate sits in benilla's workspace, so the rule applies to it.
+  - Exempting it in benilla would be a fork change made only for this crate. Hiding the registration from the scan would game the check.
+  - The node keeps the spirit of the rule (its pipeline is queued at startup) and is closer to the reference renderer (real scissor rects). The test passes again.
+  - The user's M5 check ran on the first version. The `hud` capture after the rewrite matches it element for element.
+
+**Input** (`src/input.rs`, `fly::forward_input` in `PreUpdate` after `InputSystems`):
+- **Keys:**
+  - By physical position: Bevy's `KeyCode` maps to libfpv's codes, letters and digits as uppercase ASCII (unit-tested).
+  - On edges only, skipping repeats, and only while the window has focus.
+  - A key already down when forwarding starts is a baseline: its release sends nothing.
+  - Losing focus releases every key sent down.
+- **While `fpv_overlay_wants_input()`:**
+  - Typed text goes to `fpv_overlay_text`, printable characters only.
+  - The mouse buttons are cleared from Bevy's input, so the viewer's mouse look never grabs the cursor.
+  - The OS cursor is hidden; the overlay draws its own (INTEGRATION.md "Input").
+  - Keys pressed then are swallowed from this mode's own R/P until released.
+- **The mouse:** position, buttons and wheel always go to libfpv, the wheel in lines (pixels ÷ 40).
+- **Not needed in the worldview:** keeping Esc from reaching the game, and stopping the game's own UI keys. There's no game here; both are M8's.
+
+**Q8 answered** from the install's `WTF\DefaultBindings.wtf`, read through the patch chain (`benilla-formats --example dump_file`, output kept out of the repo; benilla resolves defaults from it at `bindings/store.rs:33-35`):
+- F is ASSISTTARGET, F8 TOGGLEBAG1, R REPLY, P TOGGLESPELLBOOK, V NAMEPLATES, ENTER OPENCHAT, ESCAPE TOGGLEGAMEMENU.
+- W/A/S/D and the arrows move.
+- F7 and Y are unbound.
+- `Interface\FrameXML\Bindings.xml` names the 235 actions but holds no keys.
+- For M8: F8, R, P, Enter and Esc must not reach the client while libfpv takes them, and F is assist, so control returns only after release, per INTEGRATION.md.
+
+**Pre-check, `--flight-test hud --capture` PASS** (the climb, through the real renderer):
+- `hud-osd.png`: Betaflight's crisp `ARMED` in the picture.
+- `hud-overlay.png` (opened with `fpv_overlay_set_open`): the F8 window complete, with its tabs, live motor and battery readouts, buttons, checkbox and slider. Over the full OSD (speed, ANGL, 25.0 V and 4.16 V, current, flight timer, `LIBFPV`), translucent, with the colours right.
+
+**The user's check:** "everything works, F8 and the OSD show fine": the overlay (radio, rates, CLI), the OSD, and the switches.
+
 ## M4 status: done, the user flew it (2026-11-23)
 
 **The FPV camera** (`src/camera.rs`, `camera::apply`):

@@ -235,6 +235,94 @@ impl Libfpv {
         unsafe { (self.api.fpv_overlay_set_display)(width, height, ui_scale) };
     }
 
+    /// The OSD of `frame` as draw data filling a `width` × `height` viewport at its style's
+    /// aspect, centred, copied out of libfpv's buffers.
+    pub fn osd(
+        &self,
+        frame: &FpvFrame,
+        width: f32,
+        height: f32,
+        style: ffi::fpv_osd_style,
+    ) -> Option<DrawData> {
+        let p = unsafe { (self.api.fpv_osd_draw_data)(frame, width, height, style) };
+        DrawData::copy(p)
+    }
+
+    /// The overlay is open and takes the mouse and keyboard; the game must ignore them.
+    pub fn overlay_wants_input(&self) -> bool {
+        unsafe { (self.api.fpv_overlay_wants_input)() != 0 }
+    }
+
+    /// A key edge, by libfpv's key code (`ffi::FPV_KEY_*` or an uppercase ASCII letter or digit).
+    pub fn key(&self, key: i32, down: bool) {
+        unsafe { (self.api.fpv_input_key)(key, c_int::from(down)) };
+    }
+
+    /// Typed text for the overlay's fields, UTF-8.
+    pub fn text(&self, utf8: &str) {
+        let s = cstring(utf8);
+        unsafe { (self.api.fpv_overlay_text)(s.as_ptr()) };
+    }
+
+    /// The cursor, in the overlay's display coordinates.
+    pub fn mouse_move(&self, x: f32, y: f32) {
+        unsafe { (self.api.fpv_overlay_mouse_move)(x, y) };
+    }
+
+    /// A mouse button edge: 0 left, 1 right, 2 middle.
+    pub fn mouse_button(&self, button: i32, down: bool) {
+        unsafe { (self.api.fpv_overlay_mouse_button)(button, c_int::from(down)) };
+    }
+
+    pub fn mouse_wheel(&self, dx: f32, dy: f32) {
+        unsafe { (self.api.fpv_overlay_mouse_wheel)(dx, dy) };
+    }
+
+    /// A button of the game's in the overlay's Fly tab, by our own non-zero `id`; an empty label
+    /// removes it.
+    pub fn set_overlay_action(&self, id: u32, label: &str) {
+        let s = cstring(label);
+        unsafe { (self.api.fpv_overlay_set_action)(id, s.as_ptr()) };
+    }
+
+    /// The next overlay button clicked, or `None`.
+    pub fn poll_overlay_action(&self) -> Option<u32> {
+        let id = unsafe { (self.api.fpv_overlay_poll_action)() };
+        (id != 0).then_some(id)
+    }
+
+    /// Moves the pilot (the LOS camera, the video link's receiver, the ear), host coords of
+    /// the feet.
+    pub fn set_pilot_position(&self, feet: Vec3) -> Result<(), String> {
+        let p = feet.to_array();
+        let r = unsafe { (self.api.fpv_drone_set_pilot_position)(self.drone, p.as_ptr()) };
+        self.check("fpv_drone_set_pilot_position", r)
+    }
+
+    /// Opens or closes the overlay (F8 does it too, inside libfpv).
+    pub fn set_overlay_open(&self, open: bool) {
+        unsafe { (self.api.fpv_overlay_set_open)(c_int::from(open)) };
+    }
+
+    /// A texture's straight-alpha RGBA, width, height and revision, or `None` when it is missing
+    /// or still at `known` (no copy then).
+    pub fn texture_if_changed(
+        &self,
+        id: u64,
+        known: Option<u32>,
+    ) -> Option<(Vec<u8>, u32, u32, u32)> {
+        // SAFETY: zeroed out struct for libfpv to fill.
+        let mut t: ffi::FpvTexture = unsafe { std::mem::zeroed() };
+        let r = unsafe { (self.api.fpv_texture_get)(id, &mut t) };
+        if r != ffi::FPV_OK || t.rgba.is_null() || known == Some(t.revision) {
+            return None;
+        }
+        let n = t.width as usize * t.height as usize * 4;
+        // SAFETY: libfpv documents `rgba` as width * height * 4 bytes, valid until the next call.
+        let rgba = unsafe { std::slice::from_raw_parts(t.rgba, n) }.to_vec();
+        Some((rgba, t.width, t.height, t.revision))
+    }
+
     /// A texture's straight-alpha RGBA, width, height and revision.
     pub fn texture(&self, id: u64) -> Option<(Vec<u8>, u32, u32, u32)> {
         // SAFETY: zeroed out struct for libfpv to fill.

@@ -67,6 +67,10 @@ const SITE: &str = "streets";
 /// and holding near the top.
 const CLIMB_SHOTS: [(f64, &str); 3] = [(0.8, "fpv-ground"), (2.2, "fpv-climb"), (4.5, "fpv-hold")];
 
+/// The hud test: the OSD alone, then the overlay, opened at [`HUD_OPEN_AT`], over the flight.
+const HUD_SHOTS: [(f64, &str); 2] = [(1.5, "hud-osd"), (3.0, "hud-overlay")];
+const HUD_OPEN_AT: f64 = 2.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scenario {
     Park,
@@ -76,6 +80,8 @@ pub enum Scenario {
     Drop,
     /// Released from 10 m, armed at idle.
     DropArmed,
+    /// The climb with the OSD and the F8 overlay drawn, photographed.
+    Hud,
 }
 
 impl Scenario {
@@ -86,6 +92,7 @@ impl Scenario {
             "climb" => Some(Self::Climb),
             "drop" => Some(Self::Drop),
             "drop-armed" => Some(Self::DropArmed),
+            "hud" => Some(Self::Hud),
             _ => None,
         }
     }
@@ -97,7 +104,13 @@ impl Scenario {
             Self::Climb => "climb",
             Self::Drop => "drop",
             Self::DropArmed => "drop-armed",
+            Self::Hud => "hud",
         }
+    }
+
+    /// Seen through the FPV camera.
+    fn is_fpv(self) -> bool {
+        matches!(self, Self::Climb | Self::Hud) || self.is_drop()
     }
 
     fn is_drop(self) -> bool {
@@ -111,6 +124,7 @@ impl Scenario {
             Self::Wall => 4.0,
             Self::Climb => 5.0,
             Self::Drop | Self::DropArmed => 4.5,
+            Self::Hud => 3.5,
         }
     }
 }
@@ -126,12 +140,14 @@ pub struct FlightTestPlugin(pub FlightTest);
 impl Plugin for FlightTestPlugin {
     fn build(&self, app: &mut App) {
         info!("libfpv: flight test `{}`", self.0.scenario.name());
+        app.add_plugins((crate::draw::FpvDrawPlugin, crate::video::VideoPlugin));
         app.insert_resource(Run {
             test: self.0.clone(),
             phase: Phase::Settle { ready_since: None },
             fpv: None,
             frame: FpvFrame::new(),
             log: Log::default(),
+            osd_chip: Default::default(),
         })
         // The camera contract (NOTES, M1): after the viewer's `fly`, before `CameraPoseSet`.
         .add_systems(
@@ -151,6 +167,8 @@ struct Run {
     fpv: Option<Libfpv>,
     frame: Box<FpvFrame>,
     log: Log,
+    /// The analog OSD chip's picture for the hud test's video feed.
+    osd_chip: crate::video::OsdChipCache,
 }
 
 enum Phase {
@@ -181,6 +199,8 @@ struct Flight {
     climb_shots: usize,
     /// Climb: what the FPV camera's near plane probes chose this frame.
     near: crate::camera::NearChoice,
+    /// FPV scenarios: the vertical FOV rendered at this frame, degrees.
+    fov_deg: f32,
 }
 
 /// What a scenario measured.
@@ -231,22 +251,27 @@ struct Log {
 fn drive(
     time: Res<Time<bevy::time::Real>>,
     mut run: ResMut<Run>,
+    mut draw: ResMut<crate::draw::FpvDraw>,
     progress: Option<Res<WorldLoadProgress>>,
     collision: WorldCollision,
     build: Option<Res<BuildId>>,
-    mut camera: Query<(&mut Transform, &Camera), With<WorldCamera>>,
+    mut camera: Query<(Entity, &mut Transform, &Camera, &Projection), With<WorldCamera>>,
     window: Query<&Window, With<PrimaryWindow>>,
     mut zoom: ResMut<FovZoom>,
     mut view: ResMut<ViewDistance>,
     mut commands: Commands,
     mut exit: MessageWriter<AppExit>,
 ) {
-    let Ok((mut cam, camera_info)) = camera.single_mut() else {
+    let Ok((cam_entity, mut cam, camera_info, projection)) = camera.single_mut() else {
         return;
     };
     let now = time.elapsed_secs();
     let run = &mut *run;
-    let site = Site::named(SITE).expect("the streets site");
+    // `LIBFPV_TEST_SITE` flies a test at another site (the wall test needs a street).
+    let site = std::env::var("LIBFPV_TEST_SITE")
+        .ok()
+        .and_then(|n| Site::named(&n))
+        .unwrap_or_else(|| Site::named(SITE).expect("the streets site"));
     let mut world = |o: Vec3, d: Dir3, max: f32| {
         collision.ray_body(o, d, max).map(|h| RayHit {
             distance: h.distance,
@@ -327,28 +352,47 @@ fn drive(
                 flight.t += DT as f64;
             }
 
-            // The overlay must render every frame: the collision view draws through it.
-            if let Ok(win) = window.single() {
-                fpv.set_overlay_display(win.width(), win.height(), 1.0);
-            }
-            let overlay = fpv.overlay(dt);
-
             let first = *flight.first_sim.get_or_insert(run.frame.sim_time);
-            if run.frame.sim_time < first + STARTUP_SECS {
-                return;
-            }
+            let started = run.frame.sim_time >= first + STARTUP_SECS;
             let frame = &*run.frame;
-            if scenario == Scenario::Climb || scenario.is_drop() {
-                flight.near = crate::camera::apply(
-                    &frame.camera,
+            // An analog OSD the video feed carries in its signal is not drawn again.
+            let mut osd_over = started;
+            if started && scenario.is_fpv() {
+                run.osd_chip
+                    .refresh_font(|id, known| fpv.texture_if_changed(id, known));
+                let applied = crate::camera::apply(
+                    frame,
                     &mut cam,
                     camera_info,
                     &mut zoom,
                     &mut view,
                     &collision,
+                    &mut run.osd_chip,
                 );
-            } else {
+                flight.near = applied.near;
+                flight.fov_deg = applied.fov_deg;
+                osd_over = !applied.view.as_ref().is_some_and(|v| v.osd_in_signal());
+                crate::camera::set_view(&mut commands, cam_entity, applied.view);
+            } else if started {
                 follow(frame, &mut cam, camera_info, &mut zoom, &mut view);
+            }
+            // The overlay must render every frame: the collision view draws through it. The hud
+            // test draws it, with the OSD, through the real renderer ([`crate::draw`]).
+            let mut overlay = None;
+            if let Ok(win) = window.single() {
+                if scenario == Scenario::Hud {
+                    if flight.t >= HUD_OPEN_AT && !flight.pushed {
+                        fpv.set_overlay_open(true);
+                        flight.pushed = true;
+                    }
+                    crate::fly::publish(fpv, frame, win, dt, osd_over, &mut draw);
+                } else {
+                    fpv.set_overlay_display(win.width(), win.height(), 1.0);
+                    overlay = fpv.overlay(dt);
+                }
+            }
+            if !started {
+                return;
             }
             // Upright faces only: near the ground, the street rising ahead is not the wall.
             let wall_at = |from: Vec3| {
@@ -373,12 +417,17 @@ fn drive(
                 }
                 flight.shot = true;
             }
-            if scenario == Scenario::Climb {
-                if let Some(&(at, name)) = CLIMB_SHOTS.get(flight.climb_shots) {
+            let shots: &[(f64, &str)] = match scenario {
+                Scenario::Climb => &CLIMB_SHOTS,
+                Scenario::Hud => &HUD_SHOTS,
+                _ => &[],
+            };
+            {
+                if let Some(&(at, name)) = shots.get(flight.climb_shots) {
                     if flight.t >= at {
                         info!(
-                            "libfpv: shot {name} at t {:.2}, near {:.3} yd (closest {:?})",
-                            flight.t, flight.near.near, flight.near.closest
+                            "libfpv: shot {name} at t {:.2}, fov {:.1}°, near {:.3} yd (closest {:?}); projection near {:?} fov {:?}",
+                            flight.t, flight.fov_deg, flight.near.near, flight.near.closest, match projection { Projection::Perspective(p) => Some(p.near), _ => None }, match projection { Projection::Perspective(p) => Some(p.fov.to_degrees()), _ => None }
                         );
                         if let Some(dir) = run.test.capture.clone() {
                             shoot(&mut commands, dir, name, None, None, None);
@@ -459,15 +508,27 @@ fn start(
         &dll_path(),
         &InitOptions {
             manual_timing: !threaded(),
+            // The hud test draws the lens and the video feed as live flight does; the rest keep
+            // libfpv's FOV plain.
             flags: ffi::FPV_INIT_NO_DEVICE_INPUT
                 | ffi::FPV_INIT_NO_CONFIGURATOR
-                | ffi::FPV_INIT_NO_LENS_DISTORTION,
+                | if run.test.scenario == Scenario::Hud {
+                    ffi::FPV_INIT_VIDEO_FEED
+                } else {
+                    ffi::FPV_INIT_NO_LENS_DISTORTION
+                },
             host_build: build,
         },
     )?;
     let facing = Quat::from_rotation_arc(Vec3::NEG_Z, dir);
-    fpv.create_drone(ground, facing, ground - dir * 2.0, world)?;
-    fpv.set_view(if run.test.scenario == Scenario::Climb {
+    // `LIBFPV_TEST_PILOT_M` puts the pilot that many metres behind the drone (default 2 yd):
+    // far enough, the analog video link fades into noise.
+    let behind = std::env::var("LIBFPV_TEST_PILOT_M")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .map_or(2.0, |m| m * UNITS_PER_METER);
+    fpv.create_drone(ground, facing, ground - dir * behind, world)?;
+    fpv.set_view(if run.test.scenario.is_fpv() {
         ffi::FPV_VIEW_FPV
     } else {
         ffi::FPV_VIEW_CHASE
@@ -491,6 +552,7 @@ fn start(
         dt: DT,
         climb_shots: 0,
         near: Default::default(),
+        fov_deg: 0.0,
     })
 }
 
@@ -520,11 +582,11 @@ fn script(scenario: Scenario, flight: &mut Flight) {
     flight.ch[2] = if throttle_up { 0.0 } else { -1.0 };
     flight.ch[4] = match scenario {
         Scenario::Park if flight.t >= 6.0 => 1.0,
-        Scenario::Climb if flight.t >= 1.0 => 1.0,
+        Scenario::Climb | Scenario::Hud if flight.t >= 1.0 => 1.0,
         Scenario::DropArmed if flight.t >= 0.5 => 1.0,
         _ => -1.0,
     };
-    if scenario == Scenario::Climb {
+    if matches!(scenario, Scenario::Climb | Scenario::Hud) {
         // Angle mode (AUX2) holds it level; arm at 1 s, climb from 1.5 s, then about hover
         // (INTEGRATION.md: about -0.56 for the default 5" in angle mode).
         flight.ch[5] = 1.0;
@@ -639,7 +701,7 @@ fn measure(
                 log.last_eye = Some(eye);
             }
         }
-        Scenario::Climb => {
+        Scenario::Climb | Scenario::Hud => {
             log.climb_top = log.climb_top.max(pos.y - flight.spawn.y);
             if armed && log.armed_at.is_none() {
                 log.armed_at = Some(flight.t);
@@ -765,7 +827,7 @@ fn verdict(scenario: Scenario, flight: &Flight, log: &Log) -> bool {
             );
             pass
         }
-        Scenario::Climb => {
+        Scenario::Climb | Scenario::Hud => {
             let armed = log.armed_at.is_some();
             let climbed = m(log.climb_top) > 1.0;
             // The camera rides on the drone (a 5" frame: well inside half a metre).
@@ -776,8 +838,9 @@ fn verdict(scenario: Scenario, flight: &Flight, log: &Log) -> bool {
                 .is_some_and(|(_, up, near, _)| up.y > 0.7 && near.closest.is_some());
             let pass = armed && climbed && onboard && ground_ok;
             info!(
-                "libfpv: TEST climb {} — armed at {:?} s, top {:.2} m over the spawn, camera at \
+                "libfpv: TEST {} {} — armed at {:?} s, top {:.2} m over the spawn, camera at \
                  most {:.3} m from the drone, on the ground: {}",
+                scenario.name(),
                 if pass { "PASS" } else { "FAIL" },
                 log.armed_at.map(|t| (t * 100.0).round() / 100.0),
                 m(log.climb_top),

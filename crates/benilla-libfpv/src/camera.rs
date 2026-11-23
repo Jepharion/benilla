@@ -9,8 +9,9 @@ use benilla_world::collision::WorldCollision;
 use benilla_world::view::{world_fovy, FovZoom, ViewDistance};
 use bevy::prelude::*;
 
-use crate::ffi::FpvCamera;
+use crate::ffi::FpvFrame;
 use crate::runtime::UNITS_PER_METER;
+use crate::video::{self, OsdChipCache, VideoView};
 
 /// INTEGRATION.md "Coordinates and the camera": the near plane is 0.8 of the closest depth the
 /// probes find along the view axis, clamped to 0.02–0.2 m.
@@ -27,25 +28,54 @@ pub struct NearChoice {
     pub closest: Option<f32>,
 }
 
-/// Puts the world camera at `cam`: transform, FOV and near plane.
+/// What [`apply`] set: the near plane, the vertical FOV rendered at (degrees), and the view
+/// through the goggles (lens and video feed), `None` when there is nothing to draw.
+#[derive(Clone, Default)]
+pub struct Applied {
+    pub near: NearChoice,
+    pub fov_deg: f32,
+    pub view: Option<VideoView>,
+}
+
+/// Puts the world camera at `frame.camera`: transform, FOV (as [`video::view_for`] decides it)
+/// and near plane. The caller puts `view` on the camera ([`set_view`]).
 pub fn apply(
-    cam: &FpvCamera,
+    frame: &FpvFrame,
     transform: &mut Transform,
     camera: &Camera,
     zoom: &mut FovZoom,
     view: &mut ViewDistance,
     collision: &WorldCollision,
-) -> NearChoice {
+    osd_chip: &mut OsdChipCache,
+) -> Applied {
+    let cam = &frame.camera;
     transform.translation = Vec3::from_array(cam.position);
     transform.rotation = Quat::from_array(cam.rotation).normalize();
     let aspect = camera
         .logical_viewport_size()
         .map_or(16.0 / 9.0, |s| s.x / s.y.max(1.0));
-    let fov_y = cam.fov_y_degrees.to_radians();
+    let (video, fov_y) = video::view_for(frame, aspect, osd_chip);
     zoom.0 = fov_y / world_fovy(aspect);
-    let choice = near_plane(transform, fov_y, aspect, collision);
-    view.set_nearclip(choice.near);
-    choice
+    // The probes cover what is rendered: the widened frustum the lens then warps.
+    let near = near_plane(transform, fov_y, aspect, collision);
+    view.set_nearclip(near.near);
+    Applied {
+        near,
+        fov_deg: fov_y.to_degrees(),
+        view: video,
+    }
+}
+
+/// Puts this frame's view through the goggles on the world camera, or takes it off.
+pub fn set_view(commands: &mut Commands, camera: Entity, view: Option<VideoView>) {
+    match view {
+        Some(v) => {
+            commands.entity(camera).insert(v);
+        }
+        None => {
+            commands.entity(camera).remove::<VideoView>();
+        }
+    }
 }
 
 /// Casts rays from the eye through the frustum's centre, edge midpoints and corners, and
