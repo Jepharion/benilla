@@ -18,7 +18,7 @@
 
 use std::collections::HashSet;
 
-use benilla_app::{HostBody, HostInput};
+use benilla_app::{HostBody, HostInput, HostModel};
 use benilla_assets::coords::bevy_to_wow;
 use benilla_world::build_id::BuildId;
 use benilla_world::collision::WorldCollision;
@@ -65,12 +65,140 @@ impl Plugin for ClientPlugin {
             // before the pose is published.
             .add_systems(
                 Update,
-                drive
+                (drive, fit_model, place_model)
+                    .chain()
                     .after(WorldStage::Input)
                     .before(CameraPoseSet)
                     .before(WorldStage::Stream),
             );
     }
+}
+
+/// The drone's model: "Xiggs Fuselighter's Flyingmachine" (creature 8446), display 8011,
+/// `Creature\FlyingMachineCreature\FlyingMachineCreature.mdx`, read from the player's install.
+const MODEL_DISPLAY: u32 = 8011;
+
+/// A quad's tip-to-tip span over its motor-to-motor diagonal: the props reach past the motors by
+/// about a prop radius at each end (225 mm frame, 5.1" props: 355 mm, ×1.58; a 65 mm whoop with
+/// 31 mm props, ×1.48).
+const SPAN_PER_DIAGONAL: f32 = 1.55;
+
+/// Marks the drone's model entity.
+#[derive(Component)]
+struct DroneModel;
+
+/// The model as loaded, at scale 1, in its own frame: its widest horizontal extent (yards) and the
+/// centre of its bounds, which goes on the drone's position.
+#[derive(Clone, Copy, Debug)]
+struct ModelFit {
+    width: f32,
+    center: Vec3,
+}
+
+/// Measures the model once its parts have loaded: every descendant's mesh bounds, in the model's
+/// own frame. Parts arrive over a few frames, so it waits until their count holds still.
+fn fit_model(
+    mut client: ResMut<Client>,
+    roots: Query<&GlobalTransform, With<DroneModel>>,
+    children: Query<&Children>,
+    parts: Query<(&GlobalTransform, &bevy::camera::primitives::Aabb)>,
+) {
+    let client = &mut *client;
+    let (Some(root), None) = (client.model, client.fit) else {
+        return;
+    };
+    let Ok(root_gt) = roots.get(root) else {
+        return;
+    };
+    let to_local = root_gt.affine().inverse();
+    let (mut lo, mut hi, mut n) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN), 0usize);
+    for e in children.iter_descendants(root) {
+        let Ok((gt, aabb)) = parts.get(e) else {
+            continue;
+        };
+        let m = to_local * gt.affine();
+        let (c, h) = (Vec3::from(aabb.center), Vec3::from(aabb.half_extents));
+        for corner in 0..8 {
+            let s = Vec3::new(
+                if corner & 1 == 0 { -1.0 } else { 1.0 },
+                if corner & 2 == 0 { -1.0 } else { 1.0 },
+                if corner & 4 == 0 { -1.0 } else { 1.0 },
+            );
+            let p = m.transform_point3(c + h * s);
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+        n += 1;
+    }
+    if n == 0 || n != client.fit_parts.0 {
+        client.fit_parts = (n, 0);
+        return;
+    }
+    client.fit_parts.1 += 1;
+    if client.fit_parts.1 < 10 {
+        return;
+    }
+    let size = hi - lo;
+    let fit = ModelFit {
+        width: size.x.max(size.z),
+        center: (lo + hi) * 0.5,
+    };
+    info!(
+        "libfpv: the drone's model loaded: {n} parts, {:.2} x {:.2} x {:.2} yd at scale 1, centre {:.2?}",
+        size.x, size.y, size.z, fit.center
+    );
+    client.fit = Some(fit);
+}
+
+/// The model at the drone, with its attitude, sized to the quad flown (its motor diagonal ×
+/// [`SPAN_PER_DIAGONAL`]); hidden in the drone's own view and until it is measured.
+fn place_model(
+    client: Res<Client>,
+    mut models: Query<(&mut Transform, &mut Visibility, &mut HostModel), With<DroneModel>>,
+) {
+    let Some(root) = client.model else {
+        return;
+    };
+    let Ok((mut t, mut vis, mut model)) = models.get_mut(root) else {
+        return;
+    };
+    let Some(fit) = client.fit else {
+        return;
+    };
+    let frame = &*client.frame;
+    let diagonal = frame
+        .motors
+        .iter()
+        .map(|m| 2.0 * Vec2::new(m.position[0], m.position[2]).length())
+        .fold(0.0f32, f32::max);
+    if diagonal > 0.0 && fit.width > 0.0 {
+        // `LIBFPV_TEST_MODEL_SCALE` enlarges it for an unattended photo.
+        let test = std::env::var("LIBFPV_TEST_MODEL_SCALE")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(1.0);
+        let scale = diagonal * SPAN_PER_DIAGONAL / fit.width * test;
+        if (model.scale - scale).abs() > scale * 0.01 {
+            info!(
+                "libfpv: the drone's model at scale {scale:.4}: {:.2} m across (motor diagonal {:.0} mm)",
+                fit.width * scale / crate::runtime::UNITS_PER_METER,
+                diagonal / crate::runtime::UNITS_PER_METER * 1000.0
+            );
+            model.scale = scale;
+        }
+    }
+    // A unit model faces -Z (benilla's `net::motion::wire_yaw`), as the drone flies.
+    let rot = Quat::from_array(frame.rotation).normalize();
+    t.rotation = rot;
+    // The render scale: a guid-less model takes `HostModel.scale` once, at its build.
+    t.scale = Vec3::splat(model.scale);
+    t.translation = Vec3::from_array(frame.position) - rot * (fit.center * model.scale);
+    let want = if client.view == View::Fpv {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    vis.set_if_neq(want);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -102,6 +230,11 @@ struct Client {
     game_view: Option<(f32, f32)>,
     /// The game's FFX switches, put back in the pilot view.
     game_ffx: Option<FfxSwitches>,
+    /// The drone's model entity, its measured fit, and the fit's part count and how many frames
+    /// it has held.
+    model: Option<Entity>,
+    fit: Option<ModelFit>,
+    fit_parts: (usize, u32),
     /// `LIBFPV_CLIENT_TEST=<dir>`: the unattended check ([`Script`]).
     script: Option<Script>,
 }
@@ -122,6 +255,9 @@ impl Default for Client {
             ui_layers: None,
             game_view: None,
             game_ffx: None,
+            model: None,
+            fit: None,
+            fit_parts: (0, 0),
             script: std::env::var_os("LIBFPV_CLIENT_TEST").map(|d| Script {
                 dir: d.into(),
                 in_world_at: None,
@@ -244,8 +380,12 @@ fn drive(
             back = true;
         } else if step(3, SCRIPT_LAUNCH + 7.0) {
             info!(
-                "libfpv: TEST shot pilot — view {:?}, detached {}, keys all {}",
-                client.view, body.detached, taken.all_keys
+                "libfpv: TEST shot pilot — view {:?}, detached {}, keys all {}, drone WoW {:.2?}, feet WoW {:.2?}",
+                client.view,
+                body.detached,
+                taken.all_keys,
+                bevy_to_wow(Vec3::from_array(client.frame.position)),
+                bevy_to_wow(body.feet)
             );
             crate::flight_test::shoot(
                 &mut commands,
@@ -294,6 +434,20 @@ fn drive(
                     });
                     client.fpv = Some(fpv);
                     client.launch = at;
+                    // The drone as the pilot sees it ([`place_model`]), measured at scale 1.
+                    client.model = Some(
+                        commands
+                            .spawn((
+                                DroneModel,
+                                HostModel {
+                                    display_id: MODEL_DISPLAY,
+                                    scale: 1.0,
+                                },
+                                Transform::from_translation(at.translation),
+                                Visibility::Hidden,
+                            ))
+                            .id(),
+                    );
                 }
                 Err(e) => {
                     error!("libfpv: cannot fly — {e}");
@@ -470,7 +624,12 @@ fn yaw_of(cam: &Transform) -> Quat {
 
 /// The ground [`LAUNCH_AHEAD`] ahead of the pilot's feet along `facing`, or the feet.
 fn launch_point(feet: Vec3, facing: Quat, collision: &WorldCollision) -> Vec3 {
-    let ahead = feet + facing * Vec3::NEG_Z * LAUNCH_AHEAD + Vec3::Y * 2.0;
+    // `LIBFPV_TEST_LAUNCH_AHEAD` moves it further out, for an unattended photo of the model.
+    let reach = std::env::var("LIBFPV_TEST_LAUNCH_AHEAD")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(LAUNCH_AHEAD);
+    let ahead = feet + facing * Vec3::NEG_Z * reach + Vec3::Y * 2.0;
     collision
         .ray_body(ahead, Dir3::NEG_Y, 10.0)
         .map_or(feet, |h| ahead - Vec3::Y * h.distance)
