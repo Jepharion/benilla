@@ -115,7 +115,11 @@ pub(super) fn refresh_live_display(
     mut swapped: MessageWriter<DisplaySwapped>,
     mut fx: super::spell_fx::RebuildFx,
     mut kit_sounds: MessageWriter<crate::creature_anim::SpellKitSound>,
+    // A crate on top keeping our own body's look ([`crate::HostBody::keep_look`]).
+    host: Option<Res<crate::HostBody>>,
+    embodied: Query<(), With<crate::net::Embodied>>,
 ) {
+    let keep_own_look = host.is_some_and(|h| h.keep_look);
     // This frame's unit rebuilds, the latest of each unit's with the row it resolved: it ends
     // whatever came before it.
     let mut rebuilt: bevy::ecs::entity::EntityHashMap<(crate::lanes::Stamp, u32)> = default();
@@ -143,7 +147,11 @@ pub(super) fn refresh_live_display(
     for (entity, guid, mut net, store, applied, height, tf) in &mut entities {
         // ── The display swap ─────────────────────────────────────────────────────────────────
         // A unit takes the row its update's rebuild resolved; only a unit's display is watched.
-        if let Some(&(at, to)) = rebuilt.get(&entity) {
+        // Our own body under a crate's `keep_look` keeps its look: the morph disguises it only
+        // for others. The crate holds `keep_look` until the demorph has come back, which returns
+        // the row it never left.
+        let own = embodied.contains(entity);
+        if let Some(&(at, to)) = rebuilt.get(&entity).filter(|_| !(own && keep_own_look)) {
             info!(
                 "display swap: guid {:016x} {:?} {:?} -> {} (instant, the 0x60abe0 rebuild)",
                 guid.0, net.kind, applied.0, to
@@ -191,6 +199,8 @@ pub(super) fn refresh_live_display(
             net.kind,
             EntityKind::Unit | EntityKind::Player | EntityKind::GameObject | EntityKind::Corpse
         );
+        // Our own body under `keep_own_look` keeps its scale too.
+        let scaled_kind = scaled_kind && !(own && keep_own_look);
         if let Some(live) = store.0.object_scale_x().filter(|s| *s > 0.0 && scaled_kind) {
             if live != net.scale {
                 info!(

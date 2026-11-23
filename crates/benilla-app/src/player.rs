@@ -372,8 +372,10 @@ impl Plugin for PlayerPlugin {
         // A crate on top's hold on the body, in `PreUpdate`: a request applies before the frame's
         // player systems, none of which it races; ungated, so it reads "not active" out of the
         // world too.
-        app.init_resource::<host_body::HostBody>()
-            .add_systems(PreUpdate, host_body::sync_host_body);
+        app.init_resource::<host_body::HostBody>().add_systems(
+            PreUpdate,
+            (host_body::sync_host_body, host_body::stream_stand_in).chain(),
+        );
         app.add_message::<host_chat::HostChat>()
             .add_systems(PostUpdate, host_chat::send_host_chat);
         app.init_resource::<camera::LookConfig>();
