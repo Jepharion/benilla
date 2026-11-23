@@ -20,6 +20,7 @@ pub(crate) mod footsteps;
 mod gameobject;
 mod glue;
 mod greeting;
+pub(crate) mod host;
 pub(crate) mod interior;
 mod kit;
 mod limiter;

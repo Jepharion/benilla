@@ -313,6 +313,13 @@ impl Mixer {
         Ok((track, handle))
     }
 
+    /// A host's own stream on the main track ([`super::host`]).
+    pub(super) fn play_host(&mut self, data: super::host::HostSoundData) -> Result<()> {
+        self.manager
+            .play(data)
+            .map_err(|e| anyhow::anyhow!("play host stream: {e}"))
+    }
+
     /// Decode-stream a long sound (music, an ambience bed) on the main track.
     pub(crate) fn play_stream(
         &mut self,
