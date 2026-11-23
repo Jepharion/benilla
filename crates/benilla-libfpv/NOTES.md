@@ -8,6 +8,22 @@ Findings from reading the code, with file:line references. Newest findings go at
 
 Line numbers refer to those revisions.
 
+## M7 status: built and pre-checked, waiting on the user's check (2026-11-23)
+
+**The drone's sound** (libfpv's motors and Betaflight's beeper), per INTEGRATION.md "Audio" (`docs/INTEGRATION.md:1649-1700`) and `libfpv.h:1470-1490`:
+- **Fork change 4** (commit `e72782be`): `benilla_app::play_host_stream`. See "What it can't reach" below.
+- **`Libfpv::audio_source()`** returns what `play_host_stream` calls with the output's sample rate. It runs `fpv_audio_configure(rate, 2)` and returns a fill that calls `fpv_audio_read` on the audio thread, as libfpv intends ("Pull interleaved float samples from your audio thread"). It copies the two function pointers out, valid for the process since `fpv_global_init` pins the DLL.
+- **`--fly`** starts it once the drone exists and holds the handle in a resource (`DroneSound`). No listener is set and the view is `FPV_VIEW_FPV`, so the drone is heard onboard. The pilot-view listener (`fpv_audio_set_listener`) is M8's, with F.
+- **Volumes:** libfpv's defaults. The player sets the motors and the beeps in F8 > Camera & sound. In the full client the stream also sits under Benilla's master volume and limiter.
+
+**Pre-check, `--flight-test hud`** (no device: the test pulls a frame's worth of sound each frame at 48 kHz, as an audio thread would, and analyses the last half second at each shot):
+- **Just after arming** (t 1.5 s, motors 2,300–4,200 rpm): RMS 0.0097, peak 0.015, a square wave. Read as Betaflight's arming beep.
+- **Climbing** (t 3.0 s, motors 11,220 rpm, 187 rev/s): RMS 0.0020 (about −54 dBFS), peak 0.012, largest sample-to-sample step 0.0029, so no clicks or crackle, all finite. The autocorrelation pitch is about 676 Hz, between 3 and 4 × the rotor rate, in the range of the props' blade-pass tone.
+- **A first try that reconfigured the synth on each pull** read much quieter at hover. Pulling continuously is what live playback does.
+- **`--fly` under `$WOW_NOSOUND`:** the stream is requested once the drone is up and Benilla's side reports "silent", so the wiring runs end to end. The device path needs a listener, so it's the user's check.
+
+**For the user's check:** the motors at the right pitch as the throttle moves, no crackle, the arming and other beeps, and the loudness (libfpv's default mix is quiet against a full-scale signal).
+
 ## M6 status: done, the user checked the lens; the video feed and the pilot fix wait on their check (2026-11-23)
 
 **The user's check of the lens:**
@@ -341,6 +357,7 @@ Benilla's rules say a feature 1.12.1 doesn't have lives in a crate of its own, s
 1. **Offline flying. Done in M1:** `benilla_world::worldview::run_with`. Before, `benilla_world::worldview::run` built its app internally and took no extension (`worldview.rs:51` at `e2bad3c`).
 2. **Detaching the body in the full client.** `Player` is `pub(crate)` (`benilla-app/src/player/state.rs:336`). Its `detached` flag is only toggled by the dev chord (`player/controller.rs:482-485`). Detached is what makes streaming follow the camera (Q6). Proposed: a small public resource or event that asks for detach and attach. Needed from M4 onwards in the full client.
 3. **Owning the camera in the full client.** The rig writes the camera `Transform` in `seat_camera` (`player/camera.rs:1685`) and `fly_free` (`:2025`). A plugin ordered after those can overwrite the `Transform` in the same frame. Try that first; ask for a hook only if ordering isn't enough. The M1 worldview showed the ordering works, provided the writer also runs before `view::CameraPoseSet` (see M1).
+4. **The drone's sound. Done in M7:** `benilla_app::play_host_stream(world, make)` (`benilla-app/src/sound/host.rs`, with `Mixer::play_host`, `sound/mixer.rs`). The mixer is `pub(crate)` (`sound/mixer.rs:83`), and the worldview opens no mixer at all. The function plays a host-filled stereo stream on the main track: on the client's mixer (`SoundOutput`, `sound/mod.rs:239`) when there is one, else on a mixer it opens, under the same silence rules (`$WOW_NOSOUND`, `$WOW_CAPTURE`, no device). The fill runs on the audio thread in blocks of 1024 frames from a preallocated buffer, so the audio thread doesn't allocate. Dropping the `HostStream` handle ends the sound. Two unit tests. With it `benilla-libfpv` needs no kira dependency of its own.
 
 Keep each fork change small and separate, so rebasing on new Benilla stays easy.
 

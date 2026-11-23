@@ -148,6 +148,7 @@ impl Plugin for FlightTestPlugin {
             frame: FpvFrame::new(),
             log: Log::default(),
             osd_chip: Default::default(),
+            sound: Vec::new(),
         })
         // The camera contract (NOTES, M1): after the viewer's `fly`, before `CameraPoseSet`.
         .add_systems(
@@ -169,6 +170,8 @@ struct Run {
     log: Log,
     /// The analog OSD chip's picture for the hud test's video feed.
     osd_chip: crate::video::OsdChipCache,
+    /// The hud test's drone sound, pulled each frame as an audio thread would (M7).
+    sound: Vec<[f32; 2]>,
 }
 
 enum Phase {
@@ -354,6 +357,19 @@ fn drive(
 
             let first = *flight.first_sim.get_or_insert(run.frame.sim_time);
             let started = run.frame.sim_time >= first + STARTUP_SECS;
+            if scenario == Scenario::Hud {
+                // A frame's worth of sound, so the synth runs as it does live.
+                if run.sound.is_empty() {
+                    if let Err(e) = fpv.audio_configure(SOUND_RATE) {
+                        error!("libfpv: {e}");
+                    }
+                }
+                let step = if threaded() { flight.dt } else { DT };
+                let n = (SOUND_RATE as f32 * step).round() as usize;
+                let at = run.sound.len();
+                run.sound.resize(at + n, [0.0; 2]);
+                fpv.audio_read(&mut run.sound[at..]);
+            }
             let frame = &*run.frame;
             // An analog OSD the video feed carries in its signal is not drawn again.
             let mut osd_over = started;
@@ -431,6 +447,9 @@ fn drive(
                         );
                         if let Some(dir) = run.test.capture.clone() {
                             shoot(&mut commands, dir, name, None, None, None);
+                        }
+                        if scenario == Scenario::Hud {
+                            log_sound(&run.sound, &run.frame);
                         }
                         flight.climb_shots += 1;
                     }
@@ -941,4 +960,35 @@ fn shoot(
                 error!("libfpv: capture failed: {e}");
             }
         });
+}
+
+/// The hud test's sound rate.
+const SOUND_RATE: u32 = 48_000;
+
+/// The drone's sound pulled with no audio device (M7): the last half second, its level,
+/// peak, largest sample-to-sample step (a click or crackle shows as a jump far above the rest)
+/// and its pitch by autocorrelation, next to the motors' speed.
+fn log_sound(sound: &[[f32; 2]], frame: &FpvFrame) {
+    const RATE: u32 = SOUND_RATE;
+    let pcm = &sound[sound.len().saturating_sub(RATE as usize / 2)..];
+    let mono: Vec<f32> = pcm.iter().map(|[l, r]| 0.5 * (l + r)).collect();
+    let mean = mono.iter().sum::<f32>() / mono.len() as f32;
+    let rms = (mono.iter().map(|x| x * x).sum::<f32>() / mono.len() as f32).sqrt();
+    let peak = pcm.iter().flatten().fold(0.0f32, |m, x| m.max(x.abs()));
+    let step = mono
+        .windows(2)
+        .fold(0.0f32, |m, w| m.max((w[1] - w[0]).abs()));
+    let finite = pcm.iter().flatten().all(|x| x.is_finite());
+    // The strongest period between 40 Hz and 2 kHz.
+    let n = mono.len() / 2;
+    let corr = |lag: usize| (0..n).map(|i| mono[i] * mono[i + lag]).sum::<f32>();
+    let best =
+        (RATE as usize / 2000..=RATE as usize / 40).max_by(|&a, &b| corr(a).total_cmp(&corr(b)));
+    let rpm: Vec<f32> = frame.motors.iter().map(|m| m.rpm).collect();
+    info!(
+        "libfpv: SOUND mean {mean:.4} rms {rms:.4} peak {peak:.3} max step {step:.4} finite {finite} pitch {:.0} Hz, motors {:.0?} rpm ({:.0} rev/s)",
+        best.map_or(0.0, |l| RATE as f32 / l as f32),
+        rpm,
+        rpm.iter().sum::<f32>() / 4.0 / 60.0
+    );
 }

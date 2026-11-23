@@ -98,6 +98,10 @@ impl Plugin for FlyPlugin {
     }
 }
 
+/// The drone's sound on the mixer, held for the run: dropping it ends the sound.
+#[derive(Resource)]
+struct DroneSound(#[allow(dead_code)] Option<benilla_app::HostStream>);
+
 #[derive(Resource)]
 struct Fly {
     site: Site,
@@ -269,6 +273,12 @@ fn drive(
                     if let Some(fpv) = fly.fpv.as_ref() {
                         fpv.set_overlay_action(ACTION_MOVE_HERE, "Move the pilot here (Y)");
                         fpv.set_overlay_action(ACTION_FOLLOW, follow_label(fly.follow));
+                        // The motors and the beeper, pulled on the audio thread (M7).
+                        let source = fpv.audio_source();
+                        commands.queue(move |world: &mut World| {
+                            let stream = benilla_app::play_host_stream(world, source);
+                            world.insert_resource(DroneSound(stream));
+                        });
                     }
                     fly.phase = Phase::Flying;
                 }

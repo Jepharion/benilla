@@ -278,6 +278,37 @@ impl Libfpv {
         unsafe { (self.api.fpv_overlay_mouse_wheel)(dx, dy) };
     }
 
+    /// libfpv's drone sound (the motors and Betaflight's beeper) for the audio thread: given the
+    /// output's sample rate, configures stereo and returns the fill that pulls it
+    /// (`fpv_audio_read`, made to be called from an audio thread; INTEGRATION.md "Audio").
+    pub fn audio_source(&self) -> impl FnOnce(u32) -> benilla_app::HostFill + Send + 'static {
+        let (configure, read) = (self.api.fpv_audio_configure, self.api.fpv_audio_read);
+        move |rate| {
+            let r = unsafe { configure(rate, 2) };
+            if r != ffi::FPV_OK {
+                warn!("libfpv: fpv_audio_configure({rate}, 2) = {r}");
+            } else {
+                info!("libfpv: drone sound at {rate} Hz, stereo");
+            }
+            // The DLL is pinned for the process (fpv_global_init), so `read` stays valid.
+            Box::new(move |buf: &mut [[f32; 2]]| {
+                unsafe { read(buf.as_mut_ptr().cast::<f32>(), buf.len() as u32) };
+            })
+        }
+    }
+
+    /// Configures the drone sound for [`Self::audio_read`] on this thread, for a test with no
+    /// audio device.
+    pub fn audio_configure(&self, rate: u32) -> Result<(), String> {
+        let r = unsafe { (self.api.fpv_audio_configure)(rate, 2) };
+        self.check("fpv_audio_configure", r)
+    }
+
+    /// Pulls the next stereo frames of the drone sound into `buf`.
+    pub fn audio_read(&self, buf: &mut [[f32; 2]]) {
+        unsafe { (self.api.fpv_audio_read)(buf.as_mut_ptr().cast::<f32>(), buf.len() as u32) };
+    }
+
     /// A button of the game's in the overlay's Fly tab, by our own non-zero `id`; an empty label
     /// removes it.
     pub fn set_overlay_action(&self, id: u32, label: &str) {
