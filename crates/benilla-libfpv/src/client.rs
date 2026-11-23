@@ -18,7 +18,7 @@
 
 use std::collections::HashSet;
 
-use benilla_app::{HostBody, HostInput, HostModel};
+use benilla_app::{HostBody, HostChat, HostInput, HostModel};
 use benilla_assets::coords::bevy_to_wow;
 use benilla_world::build_id::BuildId;
 use benilla_world::collision::WorldCollision;
@@ -65,7 +65,7 @@ impl Plugin for ClientPlugin {
             // before the pose is published.
             .add_systems(
                 Update,
-                (drive, fit_model, place_model)
+                (drive, fit_model, place_model, stand_in)
                     .chain()
                     .after(WorldStage::Input)
                     .before(CameraPoseSet)
@@ -235,6 +235,9 @@ struct Client {
     model: Option<Entity>,
     fit: Option<ModelFit>,
     fit_parts: (usize, u32),
+    /// The stand-in is on ([`stand_in`]), and until when our own body keeps its look after it.
+    standing: bool,
+    look_until: Option<f32>,
     /// `LIBFPV_CLIENT_TEST=<dir>`: the unattended check ([`Script`]).
     script: Option<Script>,
 }
@@ -258,6 +261,8 @@ impl Default for Client {
             model: None,
             fit: None,
             fit_parts: (0, 0),
+            standing: false,
+            look_until: None,
             script: std::env::var_os("LIBFPV_CLIENT_TEST").map(|d| Script {
                 dir: d.into(),
                 in_world_at: None,
@@ -279,6 +284,9 @@ struct Script {
 
 /// Seconds in the world before the scripted launch: the world around the character streams in.
 const SCRIPT_LAUNCH: f32 = 10.0;
+
+/// Seconds of the scripted flight in FPV before going back (as F); it disarms a second later.
+const SCRIPT_FLIGHT: f32 = 7.0;
 
 /// Keys, text and the mouse to libfpv, right after Bevy reads them.
 fn forward_input(
@@ -337,6 +345,7 @@ fn drive(
         client.view == View::Fpv && own(KeyCode::KeyR),
         client.view == View::Fpv && own(KeyCode::KeyP),
     );
+    let mut script_channels = None;
     if let Some(script) = client.script.as_mut() {
         let at =
             *script.in_world_at.get_or_insert_with(
@@ -352,6 +361,28 @@ fn drive(
             script.in_world_at = None;
         }
         let t = now - at;
+        // The scripted flight after the launch: arm in angle mode, climb, then fly gently
+        // forward, hover, and disarm once back at the pilot.
+        let s = t - SCRIPT_LAUNCH;
+        if (0.0..SCRIPT_FLIGHT + 2.0).contains(&s) {
+            let mut ch = [-1.0f32; ffi::FPV_CHANNEL_COUNT];
+            ch[0] = 0.0;
+            ch[1] = 0.0;
+            ch[3] = 0.0;
+            if (1.0..SCRIPT_FLIGHT + 1.0).contains(&s) {
+                ch[4] = 1.0; // AUX1 arm
+                ch[5] = 1.0; // AUX2 angle
+                ch[2] = match s {
+                    s if s < 1.5 => -1.0,
+                    s if s < 2.5 => -0.3,
+                    _ => -0.5,
+                };
+                if (2.5..SCRIPT_FLIGHT - 1.0).contains(&s) {
+                    ch[1] = 0.25; // pitch forward
+                }
+            }
+            script_channels = Some(ch);
+        }
         let mut step = |n: u8, when: f32| {
             let due = script.step == n && t >= when;
             if due {
@@ -362,7 +393,7 @@ fn drive(
         if step(0, SCRIPT_LAUNCH) {
             info!("libfpv: TEST launch (as F7)");
             launch = true;
-        } else if step(1, SCRIPT_LAUNCH + 3.0) {
+        } else if step(1, SCRIPT_LAUNCH + SCRIPT_FLIGHT - 1.5) {
             info!(
                 "libfpv: TEST shot fpv — view {:?}, detached {}, keys all {}",
                 client.view, body.detached, taken.all_keys
@@ -375,10 +406,10 @@ fn drive(
                 None,
                 None,
             );
-        } else if step(2, SCRIPT_LAUNCH + 4.0) {
+        } else if step(2, SCRIPT_LAUNCH + SCRIPT_FLIGHT) {
             info!("libfpv: TEST back (as F)");
             back = true;
-        } else if step(3, SCRIPT_LAUNCH + 7.0) {
+        } else if step(3, SCRIPT_LAUNCH + SCRIPT_FLIGHT + 3.0) {
             info!(
                 "libfpv: TEST shot pilot — view {:?}, detached {}, keys all {}, drone WoW {:.2?}, feet WoW {:.2?}",
                 client.view,
@@ -395,7 +426,7 @@ fn drive(
                 None,
                 None,
             );
-        } else if step(4, SCRIPT_LAUNCH + 9.0) {
+        } else if step(4, SCRIPT_LAUNCH + SCRIPT_FLIGHT + 5.0) {
             info!("libfpv: TEST done");
             commands.write_message(AppExit::Success);
         }
@@ -503,6 +534,9 @@ fn drive(
     let Some(fpv) = client.fpv.as_mut() else {
         return;
     };
+    if let Some(ch) = script_channels {
+        fpv.set_channels(&ch);
+    }
     if mark {
         let pos = Vec3::from_array(client.frame.position);
         let fwd = Vec3::from_array(client.frame.camera.forward);
@@ -524,7 +558,31 @@ fn drive(
             Err(e) => error!("libfpv: respawn — {e}"),
         }
     }
-    // The pilot is the character, wherever it stands.
+    // Y, or the overlay's button: the pilot (the character) moves to the ground under the drone,
+    // and home with it.
+    let mut move_here = client.view == View::Fpv
+        && keys.just_pressed(KeyCode::KeyY)
+        && !wants
+        && !client.held.contains(&KeyCode::KeyY);
+    while let Some(id) = fpv.poll_overlay_action() {
+        move_here |= id == ACTION_MOVE_HERE;
+    }
+    if move_here && body.active {
+        let drone = Vec3::from_array(client.frame.position);
+        match collision.ray_body(drone, Dir3::NEG_Y, 500.0) {
+            Some(h) => {
+                let ground = drone - Vec3::Y * h.distance;
+                body.place = Some(ground);
+                fpv.gps_set_home(ground);
+                info!(
+                    "libfpv: the pilot moves here, WoW {:.1?}",
+                    bevy_to_wow(ground)
+                );
+            }
+            None => warn!("libfpv: no ground under the drone to move to"),
+        }
+    }
+    // The pilot is the character at home, wherever it stands.
     if body.active {
         if let Err(e) = fpv.set_pilot_position(body.feet) {
             error!("libfpv: {e}");
@@ -573,6 +631,98 @@ fn drive(
     if let Ok(win) = window.single() {
         publish(fpv, frame, win, dt, osd_over, &mut draw);
     }
+}
+
+/// The stand-in's default distances, metres (INTEGRATION.md "The player's choices": it takes over
+/// beyond the first and ends within the second).
+const STAND_IN_M: f32 = 20.0;
+const STAND_IN_RETURN_M: f32 = 10.0;
+
+/// The overlay's Fly-tab button for "move here".
+const ACTION_MOVE_HERE: u32 = 1;
+
+/// Seconds our own body keeps its look after the demorph is sent: the server's answer, which
+/// would rebuild it, comes back within this.
+const LOOK_HOLD: f32 = 3.0;
+
+/// The stand-in (INTEGRATION.md "Standing in for the drone"): in FPV, once the drone is past the
+/// player's stand-in distance, the server's character goes with it, so the world loads, populates
+/// and reacts around the drone. To other players it is the drone: a GM morph into the flying
+/// machine at the drone's size. Here the body stays home, as itself ([`HostBody::stand_in`],
+/// [`HostBody::keep_look`]), which is the pilot left standing where the flight started. Back
+/// within the return distance, or in the pilot's view, the character is home and itself again.
+fn stand_in(
+    mut client: ResMut<Client>,
+    mut body: ResMut<HostBody>,
+    mut chat: MessageWriter<HostChat>,
+    time: Res<Time<bevy::time::Real>>,
+) {
+    let now = time.elapsed_secs();
+    let client = &mut *client;
+    if let Some(until) = client.look_until {
+        if !client.standing && now >= until {
+            body.keep_look = false;
+            client.look_until = None;
+        }
+    }
+    let Some(fpv) = client.fpv.as_ref() else {
+        return;
+    };
+    if !body.active {
+        client.standing = false;
+        body.stand_in = None;
+        return;
+    }
+    let cfg = fpv.pilot_config();
+    let frame = &*client.frame;
+    let drone = Vec3::from_array(frame.position);
+    let far = drone.distance(body.feet);
+    let want = client.view == View::Fpv
+        && cfg.features & ffi::FPV_PILOT_STAND_IN != 0
+        && if client.standing {
+            far > cfg.stand_in_return_distance
+        } else {
+            far > cfg.stand_in_distance
+        };
+    // The server's scale for the disguise: the model's, as on this screen.
+    let scale = client.fit.map_or(0.1, |fit| {
+        let diagonal = frame
+            .motors
+            .iter()
+            .map(|m| 2.0 * Vec2::new(m.position[0], m.position[2]).length())
+            .fold(0.0f32, f32::max);
+        diagonal * SPAN_PER_DIAGONAL / fit.width
+    });
+    if want != client.standing {
+        client.standing = want;
+        if want {
+            body.keep_look = true;
+            client.look_until = None;
+            chat.write(HostChat(format!(".modify morph {MODEL_DISPLAY}")));
+            chat.write(HostChat(format!(".modify scale {scale:.3}")));
+            info!(
+                "libfpv: stand-in on — the character goes with the drone ({:.0} m from the pilot), \
+                 disguised as the flying machine at scale {scale:.3}",
+                far / crate::runtime::UNITS_PER_METER
+            );
+        } else {
+            chat.write(HostChat(".demorph".into()));
+            chat.write(HostChat(".modify scale 1".into()));
+            client.look_until = Some(now + LOOK_HOLD);
+            info!("libfpv: stand-in off — the character is home and itself");
+        }
+    }
+    body.stand_in = if !body.detached {
+        None
+    } else if client.standing {
+        // Its feet so the disguise's centre is on the drone, facing the drone's heading.
+        let rot = Quat::from_array(frame.rotation).normalize();
+        let lift = client.fit.map_or(0.0, |fit| fit.center.y * scale);
+        let f = rot * Vec3::NEG_Z;
+        Some((drone - Vec3::Y * lift, f32::atan2(-f.x, -f.z)))
+    } else {
+        Some((body.feet, body.facing))
+    };
 }
 
 /// Back to the pilot's view: the body attached, the UI shown, the game's camera settings back.
@@ -654,6 +804,15 @@ fn start(
         },
     )?;
     fpv.create_drone(ground, facing, feet, world)?;
+    // The stand-in, libfpv's distances (the player changes them in F8 > Fly > Pilot); no piloting
+    // pose yet. Home is where the flight starts.
+    fpv.pilot_set_support(
+        ffi::FPV_PILOT_STAND_IN,
+        STAND_IN_M * crate::runtime::UNITS_PER_METER,
+        STAND_IN_RETURN_M * crate::runtime::UNITS_PER_METER,
+    );
+    fpv.gps_set_home(feet);
+    fpv.set_overlay_action(ACTION_MOVE_HERE, "Move the pilot here (Y)");
     info!(
         "libfpv: drone launched at WoW {:.2?}, the pilot at WoW {:.2?}",
         bevy_to_wow(ground),
@@ -680,5 +839,81 @@ mod tests {
         // Pitch does not tilt the drone.
         let down = Transform::default().looking_to(Vec3::new(0.0, -1.0, -1.0), Vec3::Y);
         assert!((yaw_of(&down) * Vec3::Y).distance(Vec3::Y) < 1e-4);
+    }
+}
+
+/// `LIBFPV_WATCH=<seconds>`: a second client's eye for the M8 check. Ten times a second it logs
+/// every other player as this client draws it (position, display, scale), then exits after that
+/// many seconds in the world.
+#[derive(Resource)]
+pub struct Watch {
+    secs: f32,
+    since: Option<f32>,
+    next: f32,
+    /// `LIBFPV_WATCH_AT=x,y,z` (WoW): where the watcher goes first, by GM `.go xyz`.
+    go: Option<String>,
+}
+
+impl Watch {
+    /// From the environment; `None` without `LIBFPV_WATCH`.
+    pub fn from_env() -> Option<Self> {
+        let secs = std::env::var("LIBFPV_WATCH").ok()?.parse().ok()?;
+        Some(Self {
+            secs,
+            since: None,
+            next: 0.0,
+            go: std::env::var("LIBFPV_WATCH_AT")
+                .ok()
+                .map(|v| format!(".go xyz {}", v.replace(',', " "))),
+        })
+    }
+}
+
+pub fn watch_players(
+    mut watch: ResMut<Watch>,
+    time: Res<Time<bevy::time::Real>>,
+    body: Res<HostBody>,
+    objects: benilla_app::Objects,
+    transforms: Query<&GlobalTransform>,
+    mut exit: MessageWriter<AppExit>,
+    mut chat: MessageWriter<HostChat>,
+) {
+    if !body.active {
+        return;
+    }
+    if let Some(go) = watch.go.take() {
+        chat.write(HostChat(go));
+    }
+    let now = time.elapsed_secs();
+    let since = *watch.since.get_or_insert(now);
+    if now - since > watch.secs {
+        info!("libfpv: WATCH done");
+        exit.write(AppExit::Success);
+        return;
+    }
+    if now < watch.next {
+        return;
+    }
+    watch.next = now + 0.1;
+    // TYPEMASK_PLAYER.
+    const PLAYER: u32 = 0x10;
+    for (guid, entity, fields) in objects.iter() {
+        if fields.object_type_mask().unwrap_or(0) & PLAYER == 0 {
+            continue;
+        }
+        let Ok(gt) = transforms.get(entity) else {
+            continue;
+        };
+        let p = gt.translation();
+        if p.distance(body.feet) < 0.01 {
+            continue; // our own body
+        }
+        info!(
+            "libfpv: WATCH t {:.1} guid {guid:#x} at WoW {:.2?} display {:?} scale {:?}",
+            now - since,
+            bevy_to_wow(p),
+            fields.unit_displayid(),
+            fields.object_scale_x()
+        );
     }
 }

@@ -8,7 +8,7 @@ Findings from reading the code, with file:line references. Newest findings go at
 
 Line numbers refer to those revisions.
 
-## M8 status: started; the client-side groundwork only (2026-11-23)
+## M8 status: built and checked unattended against the local vmangos; waiting on the user's flights (2026-11-23)
 
 **The local server (set up 2026-11-23), outside the repo:**
 - vmangos `c13b2217` (the user's Windows build, MySQL) in `D:enillavmangosRelease`, with configs from that revision's `mangosd.conf.dist.in` and `realmd.conf.dist.in`: everything on 127.0.0.1, `DataDir = "../data"`, `mmap.enabled = 0` (no NPC pathfinding until mmaps are generated, which takes hours), remote admin on 127.0.0.1:3443. Warden is off and `Anticheat.Enable = 0` by default (relevant to Q7).
@@ -43,16 +43,34 @@ Line numbers refer to those revisions.
   - **Facing:** a unit model faces −Z at zero yaw (`net/motion.rs:41`, `wire_yaw`), as libfpv's drone does, so no correction. A first reading of a half-hidden photo said otherwise; a −90° turn then showed the nose sideways, and without it the photo from behind shows the tail with its two engine pods and the exhaust towards the camera.
   - **Test switches:** `LIBFPV_TEST_MODEL_SCALE` enlarges it and `LIBFPV_TEST_LAUNCH_AHEAD` launches further out, for a photo (`LIBFPV_CLIENT_TEST`).
   - **The user asked about sounds for other players.** A stock client only plays what the server sends or its own data, so other players can't hear libfpv's motors. They won't see this model either; it exists on this client only. What they'll see is the character, once it moves with the drone on the server.
+- **The stand-in, and the drone seen by other players** (the user: "Could we also make the drone visible to other players? That would be a big deal"), per INTEGRATION.md "Standing in for the drone" (`:1490-1630`) and "The player's choices" (`:605-640`):
+  - **The design.** In FPV, once the drone is past the player's stand-in distance (libfpv's 20 m, ending within 10 m, changeable in F8 > Fly > Pilot; `fpv_pilot_set_support(FPV_PILOT_STAND_IN, ...)` after create), the **server's** character goes with the drone. The world then loads, populates and reacts around it. **This client's** body stays home as itself, which is the pilot stand-in INTEGRATION.md requires, with no extra model.
+    - To other players the character is the drone: a GM `.modify morph 8011` (the flying machine) and `.modify scale` at the model's size, then `.demorph` and `.modify scale 1` at the end.
+    - Our own body keeps its look meanwhile, and for 3 s after the demorph is sent, so the server's answer doesn't rebuild it.
+    - The pilot's view (F), or back within the return distance, ends it. While detached and not standing in, the home position streams, so the server's character is home.
+  - **Fork change 7:** `benilla_app::HostChat(String)` (`benilla-app/src/player/host_chat.rs`), a message sent as a /say in `PostUpdate`, as the dev "land" sends `.go xyz` (`player/land.rs:82`).
+  - **Fork change 8**, on `HostBody` (`player/host_body.rs`):
+    - `stand_in: Option<(Vec3, f32)>` is streamed while detached by `stream_stand_in` (`PreUpdate`, after the sync): a `MSG_MOVE_HEARTBEAT` with no movement flags, at most every 50 ms when it moves or turns, else every 1 s. It sets `last_pos`, so on re-attach Benilla's own at-rest check (`movement_net.rs:274`) sends the body's real position.
+    - `keep_look: bool` makes `entities/live_display.rs` skip display swaps and scale eases on our own (`Embodied`) body.
+    - `place: Option<Vec3>` sets the body's feet ("move here").
+    - `facing` is published.
+    - The sync keeps the crate's fields (`..host.clone()`).
+    - Two more unit tests: the fields survive the sync; a detached body streams a flagless heartbeat, sets `last_pos`, and stops once attached.
+  - **Y** in FPV, or the F8 > Fly button "Move the pilot here (Y)": `HostBody.place` at the ground under the drone, and `fpv_gps_set_home` there. `fpv_gps_set_home(feet)` at launch.
+  - **Q7, answered on this server:** flagless heartbeats hold the character in the air: 37 yd up, no fall damage, no correction, no disconnect. With Warden off and `Anticheat.Enable = 0` (the shipped config), vmangos relocates the mover to each one. GM rights are needed only for the disguise.
+  - **The server's answers:** `.modify scale 0.1` → "You set the size 0.10 of [Fpvpilot]"; `.modify scale 1` → "size 1.00". `.modify morph` answers nothing, and works (below).
+  - **The RBAC tables are empty** (`realmd.rbac_*`), so commands go by GM level. The level is read from `account_access` (the watcher's `.go` was refused at `account.gmlevel` 3 alone and accepted once `account_access` said 3). `account create` is console-only with `Ra.Restricted = 1`, so the watcher's account went in by SQL with its SRP6 verifier computed as vmangos does.
+  - **The second client** (`LIBFPV_WATCH=<s>`, `LIBFPV_WATCH_AT=x,y,z`, logged in as `libfpvwatch` / `Fpvwatcher`; `.probe-identity` declares it only while it logs in, then `libfpvtest` again): it logs every other player ten times a second as it draws them.
+    - **The run** (`LIBFPV_TEST_LAUNCH_AHEAD=40`, a scripted flight: arm in angle mode, climb, pitch forward): the watcher drew Fpvpilot at home as display 49, scale 1. At the launch it was at the drone (37 m out) as **display 8011, scale 0.1**. It climbed with the drone to 125 yd, evenly: 46 samples at 0.1 s, mean step 0.79 yd, max 1.40 yd, none frozen. After F it was home as 49, scale 1 again. Nothing in the pilot's log about a disconnect or a correction.
+    - **The first two runs saw nothing,** and the cause was the layout, not the client: a new character's first login sits in the intro cinematic (`HostBody.active` false), and from Northshire's start the drone was about 127 yd away, outside the server's visibility.
+  - **What others see and don't:** position and heading (and the morph and scale), not pitch or roll: a unit has none on the wire. The scale is the model's at the stand-in's start; the first one in the run came before the model was measured, so it used the 0.1 fallback (the measured 5" is 0.062). Whether vmangos takes less than 0.1 is untested.
+  - **Not done:** damage to the character as damage to the drone, keeping the character from dying, and NPC aggro. Benilla doesn't see damage per frame here yet. The piloting pose (`FPV_PILOT_POSE`) isn't declared.
 
 **Found for later steps:**
 - **Benilla's dev "land"** (`player/land.rs`): after free-fly, the dev chord + G sends a GM `.go xyz` to the camera's spot and waits for the teleport, then re-attaches. For M8's Y ("move here") with GM mode on, that's a working path to move the character to the drone. Q7 decides whether movement packets can do it without GM.
 
-**The plan for the rest of M8:**
-1. **The full-client plugin** through `run_with` (the binary's default mode): F7 launches the drone at the character and detaches (`HostBody.request = Some(true)`); F goes back to the pilot (`FPV_VIEW_PILOT`, the client's camera, `fpv_audio_set_listener`); the camera contract as in M1, after `seat_camera` and `fly_free`, before `CameraPoseSet`.
-2. **Keys:** F, F7, F8, R, P, Y, Enter and Esc must not reach the client's bindings while libfpv takes them (Q8: F is ASSISTTARGET, F8 TOGGLEBAG1, R REPLY, P TOGGLESPELLBOOK, Enter OPENCHAT, Esc TOGGLEGAMEMENU). This likely needs fork change 5, a public "swallow these keys" hook into the bindings dispatcher. Not read yet.
-3. **Hide the FrameXML UI** in FPV (INTEGRATION.md `:327-376`).
-4. **The pilot:** `fpv_pilot_set_support`, the stand-in, `fpv_drone_set_pilot_position(HostBody.feet)`, `fpv_gps_set_home`.
-5. **Server side, Q7:** with GM mode, move the character with the drone (movement packets or `.go`). Then a second client watches.
+**The first plan for M8, all done above:** the full-client plugin (part 1), the keys (fork change 5), hiding the UI (part 1), the pilot (the stand-in, `fpv_drone_set_pilot_position(HostBody.feet)`, `fpv_gps_set_home`), and the server side with a second client (the stand-in). Left: the piloting pose, damage to the drone, and the user's own flights.
+
 
 ## M7 status: built and pre-checked, waiting on the user's check (2026-11-23)
 

@@ -67,6 +67,10 @@ fn main() -> AppExit {
         // The full client, with FPV from the character (F7).
         benilla_app::run_with(build, |app| {
             app.add_plugins(client::ClientPlugin);
+            if let Some(watch) = client::Watch::from_env() {
+                app.insert_resource(watch)
+                    .add_systems(bevy::prelude::Update, client::watch_players);
+            }
         })
     }
 }

@@ -325,6 +325,34 @@ impl Libfpv {
         unsafe { (self.api.fpv_audio_read)(buf.as_mut_ptr().cast::<f32>(), buf.len() as u32) };
     }
 
+    /// Says what this game does for the pilot (`fpv_pilot_features`) and its own stand-in
+    /// distances (host units); once after init (INTEGRATION.md "The player's choices").
+    pub fn pilot_set_support(&self, features: u32, distance: f32, return_distance: f32) {
+        let r = unsafe { (self.api.fpv_pilot_set_support)(features, distance, return_distance) };
+        if let Err(e) = self.check("fpv_pilot_set_support", r) {
+            warn!("libfpv: {e}");
+        }
+    }
+
+    /// The player's pilot choices (F8 > Fly > Pilot), with the stand-in distances.
+    pub fn pilot_config(&self) -> ffi::FpvPilotConfig {
+        let mut c = ffi::FpvPilotConfig {
+            struct_size: std::mem::size_of::<ffi::FpvPilotConfig>() as u32,
+            ..Default::default()
+        };
+        unsafe { (self.api.fpv_pilot_get_config)(&mut c) };
+        c
+    }
+
+    /// Home for the GPS (the OSD's home arrow and distance), host coords.
+    pub fn gps_set_home(&self, at: Vec3) {
+        let p = at.to_array();
+        let r = unsafe { (self.api.fpv_gps_set_home)(p.as_ptr()) };
+        if let Err(e) = self.check("fpv_gps_set_home", r) {
+            warn!("libfpv: {e}");
+        }
+    }
+
     /// A button of the game's in the overlay's Fly tab, by our own non-zero `id`; an empty label
     /// removes it.
     pub fn set_overlay_action(&self, id: u32, label: &str) {
