@@ -53,6 +53,7 @@ mod flags;
 mod follow;
 
 mod gait;
+pub(crate) mod host_body;
 mod input;
 // `pub(crate)` for its `LandHere` message, which the debug panel writes.
 pub(crate) mod land;
@@ -367,6 +368,11 @@ impl Plugin for PlayerPlugin {
                     .after(WorldFocusSet)
                     .in_set(crate::vm_pass::VmPass::Member),
             );
+        // A crate on top's hold on the body, in `PreUpdate`: a request applies before the frame's
+        // player systems, none of which it races; ungated, so it reads "not active" out of the
+        // world too.
+        app.init_resource::<host_body::HostBody>()
+            .add_systems(PreUpdate, host_body::sync_host_body);
         app.init_resource::<camera::LookConfig>();
         app.init_resource::<camera_zoom::ZoomLimit>();
         app.init_resource::<camera::FollowConfig>();
