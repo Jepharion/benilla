@@ -61,7 +61,7 @@ pub struct Site {
     clearance: f32,
     /// Compass heading of the path, degrees: 0 north, 90 east. `None` takes the clearest of
     /// [`HEADINGS`] at the eye, by the collision ray, so the path does not run into a wall.
-    heading: Option<f32>,
+    pub(crate) heading: Option<f32>,
     /// Camera pitch, degrees, up positive.
     pitch: f32,
     /// Yards per second along the heading.

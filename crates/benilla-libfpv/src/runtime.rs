@@ -180,6 +180,13 @@ impl Libfpv {
         self.check("fpv_drone_reset", r)
     }
 
+    /// Fresh battery, motors, props and video transmitter (the standalone's R does this, then a
+    /// reset).
+    pub fn repair(&mut self) -> Result<(), String> {
+        let r = unsafe { (self.api.fpv_drone_repair)(self.drone) };
+        self.check("fpv_drone_repair", r)
+    }
+
     /// Sets the drone's velocity at once, yards per second.
     pub fn push(&mut self, velocity: Vec3) -> Result<(), String> {
         let v = velocity.to_array();

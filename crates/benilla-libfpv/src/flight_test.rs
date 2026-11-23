@@ -7,9 +7,14 @@
 //!   disarmed drone stays within [`PARK_TOLERANCE_M`] of where it settled and arming works.
 //! - `wall`: the nearest wall 5–12 yd away, the drone pushed at it at 10 m/s. Passes when it
 //!   never passes the wall's plane, reaches it, and libfpv reports an impact facing back.
+//! - `climb`: armed in angle mode at 1 s, a climb from 1.5 s, then about hover, seen through
+//!   the FPV camera ([`crate::camera`]). Passes when it arms, climbs over a metre, the camera
+//!   rides on the drone, and on the ground the picture is upright with the near plane probes
+//!   finding the street.
 //!
-//! The camera follows libfpv's chase camera. `--capture <dir>` writes the view at the wall
-//! test's impact with the collision view drawn over it (run with `LIBFPV_COLLISION_VIEW=xray`).
+//! The camera follows libfpv's chase camera, or its FPV camera for `climb`. `--capture <dir>`
+//! writes the view at the wall test's impact with the collision view drawn over it (run with
+//! `LIBFPV_COLLISION_VIEW=xray`), and the climb's FPV view at [`CLIMB_SHOTS`].
 //!
 //! `LIBFPV_DLL` names the DLL and `LIBFPV_DATA_DIR` a scratch data folder, so a test never
 //! touches the pilot's own setup in `%APPDATA%\libfpv`.
@@ -46,10 +51,15 @@ const PARK_TOLERANCE_M: f32 = 0.05;
 /// Where the tests fly: a Trade District street.
 const SITE: &str = "streets";
 
+/// The climb's FPV shots: simulated time and name. On the ground disarmed, early in the climb,
+/// and holding near the top.
+const CLIMB_SHOTS: [(f64, &str); 3] = [(0.8, "fpv-ground"), (2.2, "fpv-climb"), (4.5, "fpv-hold")];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scenario {
     Park,
     Wall,
+    Climb,
 }
 
 impl Scenario {
@@ -57,6 +67,7 @@ impl Scenario {
         match name {
             "park" => Some(Self::Park),
             "wall" => Some(Self::Wall),
+            "climb" => Some(Self::Climb),
             _ => None,
         }
     }
@@ -65,6 +76,7 @@ impl Scenario {
         match self {
             Self::Park => "park",
             Self::Wall => "wall",
+            Self::Climb => "climb",
         }
     }
 
@@ -73,6 +85,7 @@ impl Scenario {
         match self {
             Self::Park => 10.0,
             Self::Wall => 4.0,
+            Self::Climb => 5.0,
         }
     }
 }
@@ -137,6 +150,10 @@ struct Flight {
     ch: [f32; ffi::FPV_CHANNEL_COUNT],
     pushed: bool,
     shot: bool,
+    /// Climb: shots taken so far, of [`CLIMB_SHOTS`].
+    climb_shots: usize,
+    /// Climb: what the FPV camera's near plane probes chose this frame.
+    near: crate::camera::NearChoice,
 }
 
 /// What a scenario measured.
@@ -158,6 +175,11 @@ struct Log {
     /// face along the push, cast from the drone's line at the start, minus how far along it
     /// was. Negative is past the face.
     min_margin: f32,
+    /// Climb: the highest the drone got over its spawn (yards), the farthest its FPV camera was
+    /// from it (yards), and the camera on the ground: forward, up, near plane, vertical FOV.
+    climb_top: f32,
+    cam_offset_max: f32,
+    ground_cam: Option<(Vec3, Vec3, crate::camera::NearChoice, f32)>,
     /// The first impact's normal and speed.
     impact: Option<(Vec3, f32)>,
     impacts: u32,
@@ -252,7 +274,18 @@ fn drive(
                 return;
             }
             let frame = &*run.frame;
-            follow(frame, &mut cam, camera_info, &mut zoom, &mut view);
+            if scenario == Scenario::Climb {
+                flight.near = crate::camera::apply(
+                    &frame.camera,
+                    &mut cam,
+                    camera_info,
+                    &mut zoom,
+                    &mut view,
+                    &collision,
+                );
+            } else {
+                follow(frame, &mut cam, camera_info, &mut zoom, &mut view);
+            }
             // Upright faces only: near the ground, the street rising ahead is not the wall.
             let wall_at = |from: Vec3| {
                 let d = Dir3::new(flight.dir).ok()?;
@@ -265,9 +298,30 @@ fn drive(
                 if let Some(dir) = run.test.capture.clone() {
                     let font = fpv.texture(ffi::FPV_TEXTURE_OVERLAY_FONT);
                     let osd = fpv.texture(ffi::FPV_TEXTURE_OSD_FONT);
-                    shoot(&mut commands, dir, overlay, font, osd);
+                    shoot(
+                        &mut commands,
+                        dir,
+                        "wall-impact",
+                        overlay.clone(),
+                        font,
+                        osd,
+                    );
                 }
                 flight.shot = true;
+            }
+            if scenario == Scenario::Climb {
+                if let Some(&(at, name)) = CLIMB_SHOTS.get(flight.climb_shots) {
+                    if flight.t >= at {
+                        info!(
+                            "libfpv: shot {name} at t {:.2}, near {:.3} yd (closest {:?})",
+                            flight.t, flight.near.near, flight.near.closest
+                        );
+                        if let Some(dir) = run.test.capture.clone() {
+                            shoot(&mut commands, dir, name, None, None, None);
+                        }
+                        flight.climb_shots += 1;
+                    }
+                }
             }
 
             if flight.t >= scenario.length() {
@@ -349,7 +403,11 @@ fn start(
     )?;
     let facing = Quat::from_rotation_arc(Vec3::NEG_Z, dir);
     fpv.create_drone(ground, facing, ground - dir * 2.0, world)?;
-    fpv.set_view(ffi::FPV_VIEW_CHASE);
+    fpv.set_view(if run.test.scenario == Scenario::Climb {
+        ffi::FPV_VIEW_FPV
+    } else {
+        ffi::FPV_VIEW_CHASE
+    });
     info!(
         "libfpv: drone made at WoW {:.2?} (ground {:.2} yd)",
         bevy_to_wow(ground),
@@ -366,6 +424,8 @@ fn start(
         ch: [0.0, 0.0, -1.0, 0.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0],
         pushed: false,
         shot: false,
+        climb_shots: 0,
+        near: Default::default(),
     })
 }
 
@@ -395,8 +455,19 @@ fn script(scenario: Scenario, flight: &mut Flight) {
     flight.ch[2] = if throttle_up { 0.0 } else { -1.0 };
     flight.ch[4] = match scenario {
         Scenario::Park if flight.t >= 6.0 => 1.0,
+        Scenario::Climb if flight.t >= 1.0 => 1.0,
         _ => -1.0,
     };
+    if scenario == Scenario::Climb {
+        // Angle mode (AUX2) holds it level; arm at 1 s, climb from 1.5 s, then about hover
+        // (INTEGRATION.md: about -0.56 for the default 5" in angle mode).
+        flight.ch[5] = 1.0;
+        flight.ch[2] = match flight.t {
+            t if t < 1.5 => -1.0,
+            t if t < 2.5 => -0.3,
+            _ => -0.5,
+        };
+    }
 }
 
 /// The world camera at libfpv's chase camera, its FOV and near plane through benilla's own
@@ -451,6 +522,24 @@ fn measure(
             if armed && log.armed_at.is_none() {
                 log.armed_at = Some(flight.t);
                 log.arm_text_after = Some(frame.arming_disable_text());
+            }
+        }
+        Scenario::Climb => {
+            log.climb_top = log.climb_top.max(pos.y - flight.spawn.y);
+            if armed && log.armed_at.is_none() {
+                log.armed_at = Some(flight.t);
+            }
+            let c = &frame.camera;
+            let eye = Vec3::from_array(c.position);
+            log.cam_offset_max = log.cam_offset_max.max(eye.distance(pos));
+            // On the ground, disarmed, before the climb.
+            if flight.t < 1.0 {
+                log.ground_cam = Some((
+                    Vec3::from_array(c.forward),
+                    Vec3::from_array(c.up),
+                    flight.near,
+                    c.fov_y_degrees,
+                ));
             }
         }
         Scenario::Wall => {
@@ -526,6 +615,34 @@ fn verdict(scenario: Scenario, flight: &Flight, log: &Log) -> bool {
             );
             pass
         }
+        Scenario::Climb => {
+            let armed = log.armed_at.is_some();
+            let climbed = m(log.climb_top) > 1.0;
+            // The camera rides on the drone (a 5" frame: well inside half a metre).
+            let onboard = m(log.cam_offset_max) < 0.5;
+            // On the ground the picture is upright, and the probes saw the street close below.
+            let ground_ok = log
+                .ground_cam
+                .is_some_and(|(_, up, near, _)| up.y > 0.7 && near.closest.is_some());
+            let pass = armed && climbed && onboard && ground_ok;
+            info!(
+                "libfpv: TEST climb {} — armed at {:?} s, top {:.2} m over the spawn, camera at \
+                 most {:.3} m from the drone, on the ground: {}",
+                if pass { "PASS" } else { "FAIL" },
+                log.armed_at.map(|t| (t * 100.0).round() / 100.0),
+                m(log.climb_top),
+                m(log.cam_offset_max),
+                log.ground_cam
+                    .map_or("no frame".into(), |(fwd, up, near, fov)| format!(
+                        "forward {fwd:.2} (pitch {:.1}°), up {up:.2}, fov {fov:.1}°, near {:.3} m \
+                     (closest {:?} m)",
+                        fwd.y.asin().to_degrees(),
+                        m(near.near),
+                        near.closest.map(|c| (m(c) * 1000.0).round() / 1000.0)
+                    ))
+            );
+            pass
+        }
         Scenario::Wall => {
             let wall = flight.wall.unwrap_or(0.0);
             // Never past the face at its own height, and stopped against it rather than short.
@@ -553,11 +670,12 @@ fn verdict(scenario: Scenario, flight: &Flight, log: &Log) -> bool {
     }
 }
 
-/// Writes `dir/wall-impact.png` (the view) and `dir/wall-impact-xray.png` (with the overlay's
-/// draw data, the collision view, rasterised over it).
+/// Writes `dir/<name>.png` (the view) and, given an overlay, `dir/<name>-xray.png` with its
+/// draw data (the collision view) rasterised over it.
 fn shoot(
     commands: &mut Commands,
     dir: PathBuf,
+    name: &'static str,
     overlay: Option<DrawData>,
     font: Option<(Vec<u8>, u32, u32, u32)>,
     osd: Option<(Vec<u8>, u32, u32, u32)>,
@@ -573,10 +691,14 @@ fn shoot(
                     .try_into_dynamic()
                     .map_err(|e| e.to_string())?
                     .to_rgb8();
-                rgb.save(dir.join("wall-impact.png"))
+                rgb.save(dir.join(format!("{name}.png")))
                     .map_err(|e| e.to_string())?;
                 let (w, h) = rgb.dimensions();
-                if let Some(data) = &overlay {
+                let Some(data) = &overlay else {
+                    info!("libfpv: wrote {name}.png");
+                    return Ok(());
+                };
+                {
                     let tex = |id: u64| {
                         let t = match id {
                             ffi::FPV_TEXTURE_OVERLAY_FONT => font.as_ref(),
@@ -591,15 +713,14 @@ fn shoot(
                     };
                     crate::draw_cpu::rasterize(data, &mut rgb, w, h, &tex);
                 }
-                rgb.save(dir.join("wall-impact-xray.png"))
+                rgb.save(dir.join(format!("{name}-xray.png")))
                     .map_err(|e| e.to_string())?;
                 info!(
-                    "libfpv: wrote wall-impact.png and -xray.png ({} overlay triangles)",
-                    overlay.as_ref().map_or(0, |d| d
-                        .lists
+                    "libfpv: wrote {name}.png and -xray.png ({} overlay triangles)",
+                    data.lists
                         .iter()
                         .map(|l| l.indices.len() / 3)
-                        .sum::<usize>())
+                        .sum::<usize>()
                 );
                 Ok(())
             };

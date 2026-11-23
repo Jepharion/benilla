@@ -7,15 +7,16 @@
 //! benilla-libfpv --worldview --roll-test <site>                fly a site's rolling path, live
 //! benilla-libfpv --worldview --roll-test <site> --capture <dir>
 //!                                                              photograph it flat and rolled, exit
-//! benilla-libfpv --worldview --flight-test <park|wall> [--capture <dir>]
+//! benilla-libfpv --worldview --flight-test <park|wall|climb> [--capture <dir>]
 //!                                                              a headless libfpv flight, PASS/FAIL
+//! benilla-libfpv --worldview --fly [site]                      fly with the radio (default streets)
 //! ```
 //!
-//! Roll sites: `streets` (Stormwind's Trade District), `cathedral` (inside the Cathedral of
-//! Light), `open` (Westfall) and `over-city`. `roll_test.rs` and `flight_test.rs` say what each
+//! Sites: `streets` (Stormwind's Trade District), `cathedral` (inside the Cathedral of Light),
+//! `open` (Westfall) and `over-city`. `roll_test.rs`, `flight_test.rs` and `fly.rs` say what each
 //! does and writes.
 
-use benilla_libfpv::{flight_test, roll_test};
+use benilla_libfpv::{flight_test, fly, roll_test};
 
 use benilla_app::{AppExit, BuildId};
 
@@ -48,6 +49,9 @@ fn main() -> AppExit {
             Some(Test::Flight(t)) => {
                 app.add_plugins(flight_test::FlightTestPlugin(t));
             }
+            Some(Test::Fly(site)) => {
+                app.add_plugins(fly::FlyPlugin(site));
+            }
             None => {}
         })
     } else {
@@ -59,6 +63,7 @@ fn main() -> AppExit {
 enum Test {
     Roll(roll_test::RollTest),
     Flight(flight_test::FlightTest),
+    Fly(roll_test::Site),
 }
 
 /// The command line, parsed by hand: a handful of flags.
@@ -73,10 +78,21 @@ impl Cli {
         let mut site = None;
         let mut scenario = None;
         let mut capture = None;
-        let mut it = args.iter();
+        let mut fly = None;
+        let mut it = args.iter().peekable();
         while let Some(a) = it.next() {
             match a.as_str() {
                 "--worldview" => worldview = true,
+                "--fly" => {
+                    // An optional site name; a following flag is not one.
+                    let name = it
+                        .next_if(|n| !n.starts_with("--"))
+                        .map_or("streets", String::as_str);
+                    fly = Some(
+                        roll_test::Site::named(name)
+                            .ok_or_else(|| format!("unknown site `{name}`"))?,
+                    );
+                }
                 "--roll-test" => {
                     let name = it.next().ok_or("--roll-test wants a site")?;
                     site = Some(
@@ -99,19 +115,23 @@ impl Cli {
                 other => return Err(format!("unknown argument `{other}`")),
             }
         }
-        let test = match (site, scenario) {
-            (Some(_), Some(_)) => return Err("one test at a time".into()),
-            (Some(site), None) => Some(Test::Roll(roll_test::RollTest { site, capture })),
-            (None, Some(scenario)) => {
+        let modes = [site.is_some(), scenario.is_some(), fly.is_some()];
+        if modes.iter().filter(|&&m| m).count() > 1 {
+            return Err("one of --roll-test, --flight-test and --fly at a time".into());
+        }
+        if capture.is_some() && site.is_none() && scenario.is_none() {
+            return Err("--capture wants a --roll-test or --flight-test".into());
+        }
+        let test = match (site, scenario, fly) {
+            (Some(site), ..) => Some(Test::Roll(roll_test::RollTest { site, capture })),
+            (_, Some(scenario), _) => {
                 Some(Test::Flight(flight_test::FlightTest { scenario, capture }))
             }
-            (None, None) if capture.is_some() => {
-                return Err("--capture wants a --roll-test or --flight-test".into())
-            }
-            (None, None) => None,
+            (.., Some(site)) => Some(Test::Fly(site)),
+            _ => None,
         };
         if test.is_some() && !worldview {
-            return Err("the tests run in the --worldview only".into());
+            return Err("the tests and --fly run in the --worldview only".into());
         }
         Ok(Self { worldview, test })
     }

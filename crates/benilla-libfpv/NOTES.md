@@ -8,6 +8,46 @@ Findings from reading the code, with file:line references. Newest findings go at
 
 Line numbers refer to those revisions.
 
+## M4 status: built and pre-checked, waiting on the user's flight (2026-11-23)
+
+**The FPV camera** (`src/camera.rs`, `camera::apply`):
+- **Transform:** `frame.camera` position, and rotation as-is (it maps the host's −Z to the view, which is Bevy's camera rotation).
+- **FOV:** through `FovZoom = radians(fov_y) / world_fovy(aspect)`. `Projection` is never written.
+- **Near plane, per frame:**
+  - 9 collision rays from the eye, through the frustum's centre, its edge midpoints and its corners, at the window's aspect.
+  - Each hit's depth along the view axis is its distance divided by the ray's length per unit of depth.
+  - The near plane is 0.8 × the closest depth, clamped to 0.02–0.2 m (INTEGRATION.md "Coordinates and the camera"). It's set through `ViewDistance::set_nearclip`; benilla's own range, 0.01–0.33 yd, holds that clamp (unit-tested).
+  - With nothing within reach it sits at 0.2 m.
+
+**Live flight** (`src/fly.rs`): `benilla-libfpv --worldview --fly [site]`, default `streets`.
+- **Init:**
+  - `FPV_TIMING_THREAD`, with the simulation thread at 1000 Hz.
+  - SDL device input on, and the Configurator on at `ws://localhost:5761`.
+  - Flags: `FPV_INIT_NO_LENS_DISTORTION` only.
+  - The data folder is the shared one, so the pilot's radio mapping and tune from `fpv_standalone` carry over.
+- **Spawn:** the drone is made after the start has streamed in, on the ground, facing the site's heading, with the pilot 2 yd behind.
+- **Every frame:** `fpv_set_view(FPV)`, then `fpv_drone_tick(real dt)` lending the world, then `fpv_overlay_render` (not drawn until M5). Frames are skipped until `sim_time` is 50 ms past its first reading, then `camera::apply`. Ordering is per M1.
+- **R:** `fpv_drone_repair` plus `fpv_drone_reset` to the start, as the standalone's R does.
+- **Log:** the state every 2 s (pose, speed, altitude, armed, angle mode, FOV, near plane, battery, arm text, impacts).
+- **Smoke test** (scratch data folder, `WOW_WORLDVIEW_CHECK=40`): the thread, SDL 3.4.18 input and the Configurator all came up, the drone sat on the street, near 0.086 yd, and "WORLDVIEW_CHECK ok".
+
+**Headless pre-check, `--flight-test climb` PASS:**
+- **The flight:** angle mode, armed at 1.02 s, climb from 1.5 s, then throttle −0.5, which still climbs with this preset. Top 23.6 m. The FPV camera stays within 5 cm of the drone.
+- **On the ground:**
+  - Camera up `[0.05, 0.90, 0.43]` (upright), forward pitched up 25.3° (the preset's camera uptilt).
+  - FOV 100°, the 5" preset's default.
+  - The probes found the street 9.9 cm away, so the near plane was 7.9 cm.
+- **Shots:** in `fpv-ground.png` the street runs to the frame's bottom edge with no clipping. `fpv-climb.png` shows a level horizon over the square. `fpv-hold.png`, at about 20 m, shows the rooftops, walls and spires normally.
+- **Known from I-1:** climbing about 100 yd over the city brings the fog. That's benilla's claim, not M4.
+
+**What the user checks:** fly Stormwind offline with the Pocket, and report on feel, latency and popping. There's no OSD or F8 overlay yet (M5) and no lens (M6).
+
+**Gates this round:**
+- `check.sh` now always escalates to the full chain, because this branch's `Cargo.lock` differs from `main` (since M1).
+- The first run failed `benilla-app` `sound::mixer::tests::a_streamed_bed_loops_seamlessly`. That's upstream code, a timing test that waits in 1 ms sleeps. It passed 5 of 5 alone, so it's flaky under the full suite's load. The chain was rerun.
+- **The rerun passed:** fmt, deviation-why, clippy, test (the mixer test included), doctest, test-no-install, player-clippy, player-tests, enforcer, enforcer-no-install, plus `benilla-libfpv --worldview`.
+- **Not run:** the Python gates and reference, as before.
+
 ## M3 status: checks pass headless (2026-11-23)
 
 **The bindings** (`src/ffi.rs`):
