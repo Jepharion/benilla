@@ -81,6 +81,7 @@ impl Plugin for FlyPlugin {
                 osd_chip: OsdChipCache::default(),
                 pilot: Vec3::ZERO,
                 follow: true,
+                next_wind_log: 0.0,
             })
             // Right after Bevy reads the input: libfpv gets it first, and while the overlay
             // takes it, the viewer's own mouse look never sees a button.
@@ -88,7 +89,8 @@ impl Plugin for FlyPlugin {
             // The camera contract (NOTES, M1): after the viewer's `fly`, before `CameraPoseSet`.
             .add_systems(
                 Update,
-                drive
+                (drive, fly_wind)
+                    .chain()
                     .after(WorldStage::Input)
                     .before(CameraPoseSet)
                     .before(WorldStage::Stream),
@@ -118,6 +120,8 @@ struct Fly {
     pilot: Vec3,
     /// The pilot follows the drone ([`PILOT_FOLLOW_M`]); off, the pilot stays until moved (Y).
     follow: bool,
+    /// When the wind is next logged.
+    next_wind_log: f64,
 }
 
 enum Phase {
@@ -490,11 +494,12 @@ fn start(
 pub(crate) fn log_state(frame: &FpvFrame, applied: camera::Applied) {
     let near = applied.near;
     info!(
-        "libfpv: pos WoW {:.1?} {:.0} km/h alt {:.2} armed {} angle {} fov {:.1}° (libfpv \
+        "libfpv: pos WoW {:.1?} {:.0} km/h air {:.1} m/s alt {:.2} armed {} angle {} fov {:.1}° (libfpv \
          {:.1}°, lens k1 {:.3} k2 {:.3} zoom {:.3}, feed {}) near {:.3} yd (closest {:?}) battery \
          {:.2} V arm-text {:?} impacts {}",
         bevy_to_wow(Vec3::from_array(frame.position)),
         frame.speed_kmh,
+        Vec3::from_array(frame.wind).length() / crate::runtime::UNITS_PER_METER,
         frame.altitude,
         frame.flags & ffi::FPV_DRONE_ARMED != 0,
         frame.flags & ffi::FPV_DRONE_MODE_ANGLE != 0,
@@ -545,4 +550,25 @@ fn feed_summary(frame: &FpvFrame) -> String {
         vf.rssi_dbm,
         vf.cnr_db
     )
+}
+
+/// The weather's wind at the drone ([`crate::wind`]).
+fn fly_wind(
+    mut fly: ResMut<Fly>,
+    weather: Option<Res<benilla_world::weather::WeatherState>>,
+    map: Option<Res<benilla_world::world_map::CurrentMap>>,
+    point: benilla_world::world_point::WorldPoint,
+    time: Res<Time<bevy::time::Real>>,
+) {
+    let fly = &mut *fly;
+    let drone = Vec3::from_array(fly.frame.position);
+    crate::client::weather_wind(
+        fly.fpv.as_ref(),
+        drone,
+        weather.as_deref(),
+        map.as_deref(),
+        &point,
+        time.elapsed_secs_f64(),
+        &mut fly.next_wind_log,
+    );
 }

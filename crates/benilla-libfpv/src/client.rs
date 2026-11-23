@@ -66,7 +66,14 @@ impl Plugin for ClientPlugin {
             // before the pose is published.
             .add_systems(
                 Update,
-                (drive, mouse_flying, fit_model, place_model, stand_in)
+                (
+                    drive,
+                    mouse_flying,
+                    client_wind,
+                    fit_model,
+                    place_model,
+                    stand_in,
+                )
                     .chain()
                     .after(WorldStage::Input)
                     .before(CameraPoseSet)
@@ -250,6 +257,8 @@ struct Client {
     /// Mouse & keyboard flying, and whether it holds the cursor.
     mouse: MouseFly,
     cursor_held: bool,
+    /// When the wind is next logged.
+    next_wind_log: f64,
     look_until: Option<f32>,
     /// `LIBFPV_CLIENT_TEST=<dir>`: the unattended check ([`Script`]).
     script: Option<Script>,
@@ -277,6 +286,7 @@ impl Default for Client {
             standing: false,
             mouse: MouseFly::load(),
             cursor_held: false,
+            next_wind_log: 0.0,
             look_until: None,
             script: std::env::var_os("LIBFPV_CLIENT_TEST").map(|d| Script {
                 dir: d.into(),
@@ -992,4 +1002,56 @@ fn mouse_flying(
     };
     let ch = client.mouse.step(controls, time.delta_secs(), live);
     fpv.set_channels(&ch);
+}
+
+/// The weather's wind at the drone ([`crate::wind`]), every frame; logged every 10 s.
+pub(crate) fn weather_wind(
+    fpv: Option<&Libfpv>,
+    drone: Vec3,
+    weather: Option<&benilla_world::weather::WeatherState>,
+    map: Option<&benilla_world::world_map::CurrentMap>,
+    point: &benilla_world::world_point::WorldPoint,
+    now: f64,
+    next_log: &mut f64,
+) {
+    let Some(fpv) = fpv else {
+        return;
+    };
+    let indoors = point.indoors_at(drone);
+    let map = map.map_or(0, |m| m.0);
+    let v = crate::wind::apply(fpv, weather, map, now, indoors);
+    if now >= *next_log {
+        *next_log = now + 10.0;
+        let ms = v.length() / crate::runtime::UNITS_PER_METER;
+        // The heading the wind blows from, WoW degrees (0 = north, 90 = west).
+        let from = (-v).normalize_or_zero();
+        let wow = bevy_to_wow(from);
+        info!(
+            "libfpv: wind {ms:.1} m/s from {:.0}° ({:?}, density {:.2}){}",
+            wow[1].atan2(wow[0]).to_degrees().rem_euclid(360.0),
+            weather.map(|w| w.effect_kind),
+            weather.map_or(0.0, |w| w.effect_density),
+            if indoors { ", indoors: enclosed" } else { "" }
+        );
+    }
+}
+
+fn client_wind(
+    mut client: ResMut<Client>,
+    weather: Option<Res<benilla_world::weather::WeatherState>>,
+    map: Option<Res<benilla_world::world_map::CurrentMap>>,
+    point: benilla_world::world_point::WorldPoint,
+    time: Res<Time<bevy::time::Real>>,
+) {
+    let client = &mut *client;
+    let drone = Vec3::from_array(client.frame.position);
+    weather_wind(
+        client.fpv.as_ref(),
+        drone,
+        weather.as_deref(),
+        map.as_deref(),
+        &point,
+        time.elapsed_secs_f64(),
+        &mut client.next_wind_log,
+    );
 }

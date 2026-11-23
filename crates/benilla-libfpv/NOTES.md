@@ -8,6 +8,21 @@ Findings from reading the code, with file:line references. Newest findings go at
 
 Line numbers refer to those revisions.
 
+## M9 status: wind from the weather built (2026-11-23)
+
+**Wind** (`src/wind.rs`; INTEGRATION.md "Wind", `libfpv.h:944-983`):
+- **WoW 1.12 has no wind.** `SMSG_WEATHER` is a kind and an intensity. Benilla's `WeatherWind` (`benilla-world/src/weather/precip/wind.rs:15-35`) is the player's own trailing velocity, which only tilts the rain, as the reference's `0x67c150`.
+- **The speed** comes from `WeatherState.effect_kind` and `effect_density` (`benilla-world/src/weather/mod.rs:88`, which ramps over about 10 s), at the guide's figures:
+  - fine: 2.5 m/s;
+  - rain: 3 to 9 m/s;
+  - snow: 2 to 7 m/s;
+  - sand: 4 to 12 m/s.
+- **The direction** is made up: a heading per map (the map id × the golden angle) swinging ±40° over 10 minutes.
+- **`FPV_WIND_ENCLOSED`** is set when `WorldPoint::indoors_at(drone)` (`benilla-world/src/world_point.rs:233`) says it's inside a building.
+- **Set every frame** in the client (`client_wind`) and in `--fly` (`fly_wind`). libfpv adds the gusts, the height profile, the shelter and the updrafts. The player scales it or turns it off in F8 > Fly > Wind.
+- **Logs:** a "wind ... m/s from ...°" line every 10 s. `--fly`'s state line now has the air speed at the drone (`frame.wind`).
+- **Checked** in `--fly open` (Westfall, fine weather): 2.5 m/s from 178°. The air at the drone sitting on the ground read 0.9–1.5 m/s, libfpv's slower air near the ground, so the wind reaches it. Rain, snow and sand need a server's weather: online. Two unit tests.
+
 ## M8 status: built and checked unattended against the local vmangos; waiting on the user's flights (2026-11-23)
 
 **The local server (set up 2026-11-23), outside the repo:**

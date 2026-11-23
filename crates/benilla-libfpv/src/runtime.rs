@@ -353,6 +353,22 @@ impl Libfpv {
         }
     }
 
+    /// The weather's mean wind (host units / s, horizontal; the way the air moves) and whether
+    /// the drone is somewhere no weather reaches (`FPV_WIND_ENCLOSED`). Every frame is fine.
+    pub fn set_wind(&self, velocity: Vec3, enclosed: bool) {
+        let mut w = ffi::FpvWind {
+            struct_size: std::mem::size_of::<ffi::FpvWind>() as u32,
+            ..Default::default()
+        };
+        unsafe { (self.api.fpv_wind_defaults)(&mut w) };
+        w.velocity = velocity.to_array();
+        w.flags = if enclosed { ffi::FPV_WIND_ENCLOSED } else { 0 };
+        let r = unsafe { (self.api.fpv_wind_set)(&w) };
+        if let Err(e) = self.check("fpv_wind_set", r) {
+            warn!("libfpv: {e}");
+        }
+    }
+
     /// A button of the game's in the overlay's Fly tab, by our own non-zero `id`; an empty label
     /// removes it.
     pub fn set_overlay_action(&self, id: u32, label: &str) {

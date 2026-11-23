@@ -15,3 +15,4 @@ pub mod roll_test;
 pub mod runtime;
 pub mod scan;
 pub mod video;
+pub mod wind;
