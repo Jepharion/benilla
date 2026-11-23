@@ -999,6 +999,8 @@ fn mouse_flying(
         yaw_right: keys.pressed(KeyCode::KeyD),
         arm_toggle: keys.just_pressed(KeyCode::Space),
         recentre: keys.just_pressed(KeyCode::KeyC),
+        turtle_toggle: keys.just_pressed(KeyCode::KeyT),
+        beeper: keys.pressed(KeyCode::KeyB),
     };
     let ch = client.mouse.step(controls, time.delta_secs(), live);
     fpv.set_channels(&ch);

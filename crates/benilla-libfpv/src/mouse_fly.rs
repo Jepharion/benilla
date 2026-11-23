@@ -9,6 +9,9 @@
 //! - **W / S:** throttle up and down; it stays where it is left, as a real throttle stick does.
 //! - **A / D:** yaw left and right, while held.
 //! - **Space:** arm and disarm.
+//! - **T:** turtle mode on or off (flip the drone back over after a crash: T, then arm, then push
+//!   a stick toward the side to roll onto), **B:** the beeper while held. The keys libfpv's own
+//!   keyboard fallback uses.
 //!
 //! Out of the drone's view, or while the overlay has the input, the sticks centre and the
 //! throttle holds: the drone levels and hangs where it is. The choice is kept in benilla's local
@@ -40,6 +43,10 @@ pub struct Controls {
     pub arm_toggle: bool,
     /// C went down this frame.
     pub recentre: bool,
+    /// T went down this frame.
+    pub turtle_toggle: bool,
+    /// B is held.
+    pub beeper: bool,
 }
 
 /// The mode's state between frames.
@@ -50,6 +57,7 @@ pub struct MouseFly {
     stick: Vec2,
     throttle: f32,
     armed: bool,
+    turtle: bool,
 }
 
 impl Default for MouseFly {
@@ -59,6 +67,7 @@ impl Default for MouseFly {
             stick: Vec2::ZERO,
             throttle: -1.0,
             armed: false,
+            turtle: false,
         }
     }
 }
@@ -96,7 +105,7 @@ impl MouseFly {
         self.throttle
     }
 
-    /// This frame's channels (AETR, AUX1 arm, AUX2 angle). `live`: the player is flying (the
+    /// This frame's channels (AETR, AUX1 arm, AUX2 angle, AUX3 beeper, AUX4 turtle). `live`: the player is flying (the
     /// drone's view, the overlay closed); otherwise the sticks centre and the throttle holds.
     pub fn step(&mut self, c: Controls, dt: f32, live: bool) -> [f32; ffi::FPV_CHANNEL_COUNT] {
         let mut yaw = 0.0;
@@ -110,6 +119,13 @@ impl MouseFly {
             let t = f32::from(u8::from(c.throttle_up)) - f32::from(u8::from(c.throttle_down));
             self.throttle = (self.throttle + t * THROTTLE_PER_SECOND * dt).clamp(-1.0, 1.0);
             yaw = (f32::from(u8::from(c.yaw_right)) - f32::from(u8::from(c.yaw_left))) * YAW;
+            if c.turtle_toggle {
+                self.turtle = !self.turtle;
+                info!(
+                    "libfpv: mouse flying — turtle mode {}",
+                    if self.turtle { "on" } else { "off" }
+                );
+            }
             if c.arm_toggle {
                 self.armed = !self.armed;
                 if self.armed {
@@ -131,6 +147,8 @@ impl MouseFly {
         ch[3] = yaw;
         ch[4] = if self.armed { 1.0 } else { -1.0 };
         ch[5] = 1.0; // angle
+        ch[6] = if live && c.beeper { 1.0 } else { -1.0 };
+        ch[7] = if self.turtle { 1.0 } else { -1.0 };
         ch
     }
 }
@@ -143,7 +161,7 @@ fn settings_path() -> Option<PathBuf> {
 /// The overlay button's label for the mode.
 pub fn label(on: bool) -> &'static str {
     if on {
-        "Mouse & keyboard flying: ON (mouse = pitch/roll, W/S throttle, A/D yaw, Space arm, C centre)"
+        "Mouse & keyboard flying: ON (mouse = pitch/roll, W/S throttle, A/D yaw, Space arm, C centre, T turtle, B beep)"
     } else {
         "Mouse & keyboard flying: off (click to fly without a radio)"
     }
@@ -220,6 +238,36 @@ mod tests {
         );
         assert_eq!((ch[4], ch[2]), (1.0, -1.0));
         assert!(m.armed());
+    }
+
+    #[test]
+    fn t_toggles_turtle_and_b_beeps_while_held() {
+        let mut m = fly();
+        let ch = m.step(
+            Controls {
+                turtle_toggle: true,
+                beeper: true,
+                ..default()
+            },
+            0.016,
+            true,
+        );
+        assert_eq!((ch[6], ch[7]), (1.0, 1.0), "beeper held, turtle on");
+        let ch = m.step(Controls::default(), 0.016, true);
+        assert_eq!(
+            (ch[6], ch[7]),
+            (-1.0, 1.0),
+            "the beeper stops, turtle stays"
+        );
+        let ch = m.step(
+            Controls {
+                turtle_toggle: true,
+                ..default()
+            },
+            0.016,
+            true,
+        );
+        assert_eq!(ch[7], -1.0, "turtle off again");
     }
 
     #[test]
