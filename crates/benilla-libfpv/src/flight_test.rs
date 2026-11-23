@@ -904,7 +904,7 @@ fn verdict(scenario: Scenario, flight: &Flight, log: &Log) -> bool {
 
 /// Writes `dir/<name>.png` (the view) and, given an overlay, `dir/<name>-xray.png` with its
 /// draw data (the collision view) rasterised over it.
-fn shoot(
+pub(crate) fn shoot(
     commands: &mut Commands,
     dir: PathBuf,
     name: &'static str,

@@ -209,6 +209,20 @@ impl Libfpv {
         unsafe { (self.api.fpv_set_view)(view) };
     }
 
+    /// Where the drone is heard from in the pilot view: the game camera (host coords), or `None`
+    /// for libfpv's own (the pilot's head, turning to follow the drone).
+    pub fn set_audio_listener(&self, pose: Option<(Vec3, Quat)>) {
+        match pose {
+            Some((p, q)) => {
+                let (p, q) = (p.to_array(), q.to_array());
+                unsafe { (self.api.fpv_audio_set_listener)(p.as_ptr(), q.as_ptr()) };
+            }
+            None => unsafe {
+                (self.api.fpv_audio_set_listener)(std::ptr::null(), std::ptr::null())
+            },
+        }
+    }
+
     /// Advances presentation by `dt` and fills `frame`; libfpv's collision rays during it are
     /// answered by `world`.
     pub fn tick(

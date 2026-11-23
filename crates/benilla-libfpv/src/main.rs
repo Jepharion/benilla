@@ -1,6 +1,7 @@
 //! `benilla-libfpv`: WoW FPV, an FPV quad flying through the 1.12 world on libfpv, built on top of
-//! benilla. Bare, it starts the full client through `benilla_app::run_with`; `--worldview` starts
-//! the offline world viewer through `benilla_world::worldview::run_with`, with no server.
+//! benilla. Bare, it starts the full client through `benilla_app::run_with`, with FPV from the
+//! character (`client.rs`: F7 launches, F goes back to the pilot); `--worldview` starts the
+//! offline world viewer through `benilla_world::worldview::run_with`, with no server.
 //!
 //! ```text
 //! benilla-libfpv --worldview                                   the viewer, with this crate's plugin
@@ -18,7 +19,7 @@
 //! `open` (Westfall) and `over-city`. `roll_test.rs`, `flight_test.rs` and `fly.rs` say what each
 //! does and writes.
 
-use benilla_libfpv::{flight_test, fly, roll_test, scan};
+use benilla_libfpv::{client, flight_test, fly, roll_test, scan};
 
 use benilla_app::{AppExit, BuildId};
 
@@ -63,8 +64,10 @@ fn main() -> AppExit {
             None => {}
         })
     } else {
-        // The full client; the FPV plugin joins it in M8.
-        benilla_app::run_with(build, |_app| {})
+        // The full client, with FPV from the character (F7).
+        benilla_app::run_with(build, |app| {
+            app.add_plugins(client::ClientPlugin);
+        })
     }
 }
 

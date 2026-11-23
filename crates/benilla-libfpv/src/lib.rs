@@ -1,6 +1,7 @@
 //! WoW FPV on libfpv, built on top of benilla: the plugins the `benilla-libfpv` launcher adds.
 
 pub mod camera;
+pub mod client;
 pub mod draw;
 pub mod draw_cpu;
 pub mod ffi;

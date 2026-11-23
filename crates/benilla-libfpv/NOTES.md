@@ -8,6 +8,41 @@ Findings from reading the code, with file:line references. Newest findings go at
 
 Line numbers refer to those revisions.
 
+## M8 status: started; the client-side groundwork only (2026-11-23)
+
+**The local server (set up 2026-11-23), outside the repo:**
+- vmangos `c13b2217` (the user's Windows build, MySQL) in `D:enillavmangosRelease`, with configs from that revision's `mangosd.conf.dist.in` and `realmd.conf.dist.in`: everything on 127.0.0.1, `DataDir = "../data"`, `mmap.enabled = 0` (no NPC pathfinding until mmaps are generated, which takes hours), remote admin on 127.0.0.1:3443. Warden is off and `Anticheat.Enable = 0` by default (relevant to Q7).
+- Map data extracted from the 1.12 install (read only): `datamaps`, `data875dbc` (this build wants dbc under the build number), `datavmaps`.
+- MariaDB 10.11.10 portable in `D:enillamariadb` (the user chose it over an installer; checksum verified), localhost:3306, with the user's dumps from `D:enillaDBmysql-dump` (world migrations up to 2026-11-21).
+- Realm 1 "Benilla libfpv", build 5875. Test account `libfpvtest`, GM level 5 (the highest any command needs), character `Fpvpilot` (human warrior, Northshire), created with `WOW_PROBE_CHARCREATE`. Passwords are in `D:enillamariadbCREDENTIALS.txt` and `D:enillavmangosTEST-ACCOUNT.txt`; `.probe-identity` names the account.
+- `D:enillavmangosstart-server.cmd` starts all three. A scripted login as `Fpvpilot` reached the world and held 90 s.
+- A `mangosd` whose console input ends quits, so a script must not start it with stdin from a file.
+
+**Done:**
+- **Fork change 2:** `benilla_app::HostBody` (`benilla-app/src/player/host_body.rs`), a public resource. `request: Some(true | false)` detaches or attaches the body. `active`, `detached` and `feet` are the client's, rewritten each frame.
+  - It sets the same `Player::detached` the dev chord's free-fly sets (`player/controller.rs:482-485`): the avatar and its server position stay put, and streaming follows the camera (`player/world_focus.rs:94`). That's the "detach" half of M8, with the character as the pilot standing at home.
+  - `sync_host_body` runs in `PreUpdate`, so a request applies before the frame's player systems. In `Update` it made six unordered pairs with the other `Player` writers, and the schedule test's ceiling (`game_plugins.rs:982`) refused it. It isn't gated on the world, so out of the world it reads "not active" (a request is dropped then), and with no `Player` at all (a harness) it reads the default. Two unit tests.
+- **Fork change 5:** `benilla_app::HostInput` (`benilla-app/src/ui_script/records.rs`), a public resource of the keys (or the whole keyboard) and the mouse a crate on top takes. Every game-side key and click goes through one function, `collect_input_records` (`ui_script/records.rs`): the bindings dispatch (`bindings.rs:1027`) and the UI's key feed (`ui_script/input.rs:207`) both read its `InputRecords`. So it drops the taken records there, presses and releases alike; a cursor move still records. The other keyboard readers are an idle timer (`ui_chat/idle.rs:58`), a loading-screen check and test harnesses. It's an `Option<Res<…>>`, so nothing changes without it. One unit test.
+- **The full-client plugin, `client.rs`** (the binary's default mode, `run_with`):
+  - **F7** launches: the first time, libfpv starts and the drone is made on the ground 1.5 yd ahead of the character, facing the camera's heading; the character is the pilot (`fpv_drone_set_pilot_position(HostBody.feet)` every frame). Then `HostBody.request = Some(true)`, the UI hides, and the world camera is the drone's (`camera::apply`, the M1 contract: `.after(WorldStage::Input).before(CameraPoseSet)`). In the client every rig writer (`control` in `PlayerControlSet`, cinematics after it) runs inside `WorldStage::Input`, and `publish_camera_pose` runs `.after(WorldStage::Input)` (`benilla-world/src/view.rs:406-411`), so no camera hook (fork change 3) is needed.
+  - **F** goes back: the body attaches, the UI shows, the game's `FovZoom` and near plane are put back, the lens comes off; the drone flies on with `FPV_VIEW_PILOT` and the game camera as the ear (`fpv_audio_set_listener`).
+  - **R** and **P** in FPV, as in `--fly`. Leaving the world while in FPV goes back to the pilot.
+  - **Keys:** F7 and F8 are always taken (stock: F7 free, F8 TOGGLEBAG1); in FPV, or while the overlay wants input, every key and the mouse; a key pressed while taken stays taken until released.
+  - **The UI:** the UI camera (Bevy's public `IsDefaultUiCamera`) is pointed at render layer 31, which nothing draws on. Its quads are `Mesh2d` entities on the UI layers (`ui_pass.rs:187`), while the world it composites is a per-camera draw (`FfxBackdrop`, `world_backdrop.rs`), so the world stays and the UI goes. Switching the camera off instead would black out the screen: the UI pass writes the swapchain (`ui_pass.rs:1-6`).
+  - The input forwarding is shared with `--fly` (`fly::InputBridge`).
+- **Checked unattended** (`LIBFPV_CLIENT_TEST=<dir>`, logged in as `Fpvpilot`): 10 s in the world it launches as F7 does, photographs, goes back as F does, photographs and exits. The log: "host body: detached", view Fpv, every key taken; then "attached", view Pilot, keys back. `client-fpv.png`: Northshire Abbey from the ground through the analog feed and fisheye, Betaflight's boot screen in the OSD, none of the game's UI. `client-pilot.png`: the UI back, the character standing where it was.
+- **Seen there, for later:** in the pilot view the drone isn't drawn in the world, so the pilot can't watch it fly. Read INTEGRATION.md on drawing the drone before the next step.
+
+**Found for later steps:**
+- **Benilla's dev "land"** (`player/land.rs`): after free-fly, the dev chord + G sends a GM `.go xyz` to the camera's spot and waits for the teleport, then re-attaches. For M8's Y ("move here") with GM mode on, that's a working path to move the character to the drone. Q7 decides whether movement packets can do it without GM.
+
+**The plan for the rest of M8:**
+1. **The full-client plugin** through `run_with` (the binary's default mode): F7 launches the drone at the character and detaches (`HostBody.request = Some(true)`); F goes back to the pilot (`FPV_VIEW_PILOT`, the client's camera, `fpv_audio_set_listener`); the camera contract as in M1, after `seat_camera` and `fly_free`, before `CameraPoseSet`.
+2. **Keys:** F, F7, F8, R, P, Y, Enter and Esc must not reach the client's bindings while libfpv takes them (Q8: F is ASSISTTARGET, F8 TOGGLEBAG1, R REPLY, P TOGGLESPELLBOOK, Enter OPENCHAT, Esc TOGGLEGAMEMENU). This likely needs fork change 5, a public "swallow these keys" hook into the bindings dispatcher. Not read yet.
+3. **Hide the FrameXML UI** in FPV (INTEGRATION.md `:327-376`).
+4. **The pilot:** `fpv_pilot_set_support`, the stand-in, `fpv_drone_set_pilot_position(HostBody.feet)`, `fpv_gps_set_home`.
+5. **Server side, Q7:** with GM mode, move the character with the drone (movement packets or `.go`). Then a second client watches.
+
 ## M7 status: built and pre-checked, waiting on the user's check (2026-11-23)
 
 **The drone's sound** (libfpv's motors and Betaflight's beeper), per INTEGRATION.md "Audio" (`docs/INTEGRATION.md:1649-1700`) and `libfpv.h:1470-1490`:
@@ -355,7 +390,7 @@ Benilla's rules say a feature 1.12.1 doesn't have lives in a crate of its own, s
 **What it can't reach (needs fork changes):**
 
 1. **Offline flying. Done in M1:** `benilla_world::worldview::run_with`. Before, `benilla_world::worldview::run` built its app internally and took no extension (`worldview.rs:51` at `e2bad3c`).
-2. **Detaching the body in the full client.** `Player` is `pub(crate)` (`benilla-app/src/player/state.rs:336`). Its `detached` flag is only toggled by the dev chord (`player/controller.rs:482-485`). Detached is what makes streaming follow the camera (Q6). Proposed: a small public resource or event that asks for detach and attach. Needed from M4 onwards in the full client.
+2. **Detaching the body in the full client. Done in M8:** `benilla_app::HostBody` (see M8). Before: `Player` is `pub(crate)` (`benilla-app/src/player/state.rs:336`). Its `detached` flag is only toggled by the dev chord (`player/controller.rs:482-485`). Detached is what makes streaming follow the camera (Q6). Proposed: a small public resource or event that asks for detach and attach. Needed from M4 onwards in the full client.
 3. **Owning the camera in the full client.** The rig writes the camera `Transform` in `seat_camera` (`player/camera.rs:1685`) and `fly_free` (`:2025`). A plugin ordered after those can overwrite the `Transform` in the same frame. Try that first; ask for a hook only if ordering isn't enough. The M1 worldview showed the ordering works, provided the writer also runs before `view::CameraPoseSet` (see M1).
 4. **The drone's sound. Done in M7:** `benilla_app::play_host_stream(world, make)` (`benilla-app/src/sound/host.rs`, with `Mixer::play_host`, `sound/mixer.rs`). The mixer is `pub(crate)` (`sound/mixer.rs:83`), and the worldview opens no mixer at all. The function plays a host-filled stereo stream on the main track: on the client's mixer (`SoundOutput`, `sound/mod.rs:239`) when there is one, else on a mixer it opens, under the same silence rules (`$WOW_NOSOUND`, `$WOW_CAPTURE`, no device). The fill runs on the audio thread in blocks of 1024 frames from a preallocated buffer, so the audio thread doesn't allocate. Dropping the `HostStream` handle ends the sound. Two unit tests. With it `benilla-libfpv` needs no kira dependency of its own.
 

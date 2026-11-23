@@ -35,13 +35,13 @@ use crate::runtime::{dll_path, InitOptions, Libfpv, RayHit};
 use crate::video::{OsdChipCache, VideoPlugin};
 
 /// Frames are ignored until `sim_time` is this far past its first reading.
-const STARTUP_SECS: f64 = 0.05;
+pub(crate) const STARTUP_SECS: f64 = 0.05;
 
 /// Wall seconds the world must read ready before the drone is made.
 const SETTLE_SECS: f32 = 3.0;
 
 /// How often the drone's state goes to the log, wall seconds.
-const LOG_EVERY: f32 = 2.0;
+pub(crate) const LOG_EVERY: f32 = 2.0;
 
 /// Pixels per wheel line, for a wheel that reports pixels (a touchpad).
 const WHEEL_PIXELS_PER_LINE: f32 = 40.0;
@@ -77,9 +77,7 @@ impl Plugin for FlyPlugin {
                 spawn: Transform::IDENTITY,
                 first_sim: None,
                 next_log: 0.0,
-                edges: KeyEdges::default(),
-                swallowed: HashSet::new(),
-                cursor_taken: false,
+                input: InputBridge::default(),
                 osd_chip: OsdChipCache::default(),
                 pilot: Vec3::ZERO,
                 follow: true,
@@ -100,7 +98,7 @@ impl Plugin for FlyPlugin {
 
 /// The drone's sound on the mixer, held for the run: dropping it ends the sound.
 #[derive(Resource)]
-struct DroneSound(#[allow(dead_code)] Option<benilla_app::HostStream>);
+pub(crate) struct DroneSound(#[allow(dead_code)] pub(crate) Option<benilla_app::HostStream>);
 
 #[derive(Resource)]
 struct Fly {
@@ -112,13 +110,8 @@ struct Fly {
     spawn: Transform,
     first_sim: Option<f64>,
     next_log: f32,
-    /// The keys libfpv has been told are down.
-    edges: KeyEdges,
-    /// Keys pressed while the overlay took the keyboard, kept from this mode's own keys until
-    /// they are released (INTEGRATION.md: return control only after the key is up).
-    swallowed: HashSet<KeyCode>,
-    /// This mode hid the cursor for the overlay, which draws its own.
-    cursor_taken: bool,
+    /// Keys and the mouse to libfpv.
+    input: InputBridge,
     /// The analog OSD chip's picture, rebuilt when the grid changes.
     osd_chip: OsdChipCache,
     /// Where the pilot stands (feet): the video link's receiver, the LOS camera, the ear.
@@ -133,94 +126,132 @@ enum Phase {
     Failed,
 }
 
+/// The input bridge's state between frames: the keys libfpv has been told are down, the keys the
+/// overlay took, kept from the host until released, and whether the cursor was hidden for it.
+#[derive(Default)]
+pub(crate) struct InputBridge {
+    pub(crate) edges: KeyEdges,
+    /// Keys pressed while the overlay took the keyboard, kept from the host's own keys until
+    /// they are released (INTEGRATION.md: return control only after the key is up).
+    pub(crate) swallowed: HashSet<KeyCode>,
+    /// The cursor was hidden for the overlay, which draws its own.
+    pub(crate) cursor_taken: bool,
+}
+
+/// The frame's keyboard and mouse messages, for [`InputBridge::forward`].
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct InputMessages<'w, 's> {
+    keyboard: MessageReader<'w, 's, KeyboardInput>,
+    buttons_in: MessageReader<'w, 's, MouseButtonInput>,
+    cursor_in: MessageReader<'w, 's, CursorMoved>,
+    wheel_in: MessageReader<'w, 's, MouseWheel>,
+}
+
+impl InputMessages<'_, '_> {
+    /// Drops the frame's messages: nothing to hand on.
+    pub(crate) fn clear(&mut self) {
+        self.keyboard.clear();
+        self.buttons_in.clear();
+        self.cursor_in.clear();
+        self.wheel_in.clear();
+    }
+}
+
+impl InputBridge {
+    /// Keys, text and the mouse to libfpv, on edges, while the window has focus. While the
+    /// overlay takes the input, the host's mouse buttons are cleared and the cursor hidden.
+    /// Returns whether the overlay wants the input.
+    pub(crate) fn forward(
+        &mut self,
+        fpv: &Libfpv,
+        msgs: &mut InputMessages,
+        keys: &ButtonInput<KeyCode>,
+        buttons: &mut ButtonInput<MouseButton>,
+        win: &Window,
+        cursor: &mut CursorOptions,
+    ) -> bool {
+        if !win.focused {
+            self.edges.release_all(|k, d| fpv.key(k, d));
+            msgs.clear();
+            return false;
+        }
+        let wants = fpv.overlay_wants_input();
+        for ev in msgs.keyboard.read() {
+            let Some(key) = fpv_key(ev.key_code) else {
+                continue;
+            };
+            match ev.state {
+                ButtonState::Pressed if !ev.repeat => {
+                    self.edges.press(key, |k, d| fpv.key(k, d));
+                }
+                ButtonState::Released => self.edges.release(key, |k, d| fpv.key(k, d)),
+                ButtonState::Pressed => {}
+            }
+            if wants && ev.state == ButtonState::Pressed {
+                if let Some(text) = ev.text.as_deref().and_then(printable) {
+                    fpv.text(text);
+                }
+            }
+        }
+        for ev in msgs.cursor_in.read() {
+            fpv.mouse_move(ev.position.x, ev.position.y);
+        }
+        for ev in msgs.buttons_in.read() {
+            let button = match ev.button {
+                MouseButton::Left => 0,
+                MouseButton::Right => 1,
+                MouseButton::Middle => 2,
+                _ => continue,
+            };
+            fpv.mouse_button(button, ev.state == ButtonState::Pressed);
+        }
+        for ev in msgs.wheel_in.read() {
+            let k = match ev.unit {
+                MouseScrollUnit::Line => 1.0,
+                MouseScrollUnit::Pixel => 1.0 / WHEEL_PIXELS_PER_LINE,
+            };
+            fpv.mouse_wheel(ev.x * k, ev.y * k);
+        }
+
+        if wants {
+            // The overlay has the keyboard: every key down now stays the overlay's until released.
+            self.swallowed.extend(keys.get_pressed().copied());
+            // And the mouse: the host's mouse look grabs the cursor on a held button.
+            buttons.reset_all();
+            if !self.cursor_taken {
+                self.cursor_taken = true;
+                cursor.grab_mode = CursorGrabMode::None;
+                // The overlay draws its own cursor (INTEGRATION.md "Input").
+                cursor.visible = false;
+            }
+        } else if self.cursor_taken {
+            self.cursor_taken = false;
+            cursor.visible = true;
+        }
+        self.swallowed.retain(|k| keys.pressed(*k));
+        wants
+    }
+}
+
 /// Keys, text and the mouse to libfpv, on edges, while the window has focus.
-#[allow(clippy::too_many_arguments)]
 fn forward_input(
     mut fly: ResMut<Fly>,
-    mut keyboard: MessageReader<KeyboardInput>,
-    mut buttons_in: MessageReader<MouseButtonInput>,
-    mut cursor_in: MessageReader<CursorMoved>,
-    mut wheel_in: MessageReader<MouseWheel>,
+    mut msgs: InputMessages,
     keys: Res<ButtonInput<KeyCode>>,
     mut buttons: ResMut<ButtonInput<MouseButton>>,
     mut window: Query<(&Window, &mut CursorOptions), With<PrimaryWindow>>,
 ) {
     let fly = &mut *fly;
     let Some(fpv) = fly.fpv.as_ref() else {
-        // Not flying yet: nothing to hand on.
-        keyboard.clear();
-        buttons_in.clear();
-        cursor_in.clear();
-        wheel_in.clear();
+        msgs.clear();
         return;
     };
     let Ok((win, mut cursor)) = window.single_mut() else {
         return;
     };
-    if !win.focused {
-        fly.edges.release_all(|k, d| fpv.key(k, d));
-        keyboard.clear();
-        buttons_in.clear();
-        wheel_in.clear();
-        cursor_in.clear();
-        return;
-    }
-    let wants = fpv.overlay_wants_input();
-    for ev in keyboard.read() {
-        let Some(key) = fpv_key(ev.key_code) else {
-            continue;
-        };
-        match ev.state {
-            ButtonState::Pressed if !ev.repeat => {
-                fly.edges.press(key, |k, d| fpv.key(k, d));
-            }
-            ButtonState::Released => fly.edges.release(key, |k, d| fpv.key(k, d)),
-            ButtonState::Pressed => {}
-        }
-        if wants && ev.state == ButtonState::Pressed {
-            if let Some(text) = ev.text.as_deref().and_then(printable) {
-                fpv.text(text);
-            }
-        }
-    }
-    for ev in cursor_in.read() {
-        fpv.mouse_move(ev.position.x, ev.position.y);
-    }
-    for ev in buttons_in.read() {
-        let button = match ev.button {
-            MouseButton::Left => 0,
-            MouseButton::Right => 1,
-            MouseButton::Middle => 2,
-            _ => continue,
-        };
-        fpv.mouse_button(button, ev.state == ButtonState::Pressed);
-    }
-    for ev in wheel_in.read() {
-        let k = match ev.unit {
-            MouseScrollUnit::Line => 1.0,
-            MouseScrollUnit::Pixel => 1.0 / WHEEL_PIXELS_PER_LINE,
-        };
-        fpv.mouse_wheel(ev.x * k, ev.y * k);
-    }
-
-    if wants {
-        // The overlay has the keyboard: every key down now stays the overlay's until released.
-        fly.swallowed.extend(keys.get_pressed().copied());
-        // And the mouse: the viewer's mouse look grabs the cursor on a held button.
-        buttons.reset_all();
-        if !fly.cursor_taken {
-            fly.cursor_taken = true;
-            cursor.grab_mode = CursorGrabMode::None;
-            // The overlay draws its own cursor (INTEGRATION.md "Input").
-            cursor.visible = false;
-        }
-    } else if fly.cursor_taken {
-        fly.cursor_taken = false;
-        cursor.visible = true;
-    }
-    fly.swallowed.retain(|k| keys.pressed(*k));
+    fly.input
+        .forward(fpv, &mut msgs, &keys, &mut buttons, win, &mut cursor);
 }
-
 #[allow(clippy::too_many_arguments)]
 fn drive(
     time: Res<Time<bevy::time::Real>>,
@@ -292,7 +323,9 @@ fn drive(
             let Some(fpv) = fly.fpv.as_mut() else { return };
             // This mode's own keys, unless the overlay has the keyboard or had it when pressed.
             let own = |k: KeyCode| {
-                keys.just_pressed(k) && !fly.swallowed.contains(&k) && !fpv.overlay_wants_input()
+                keys.just_pressed(k)
+                    && !fly.input.swallowed.contains(&k)
+                    && !fpv.overlay_wants_input()
             };
             let (mark, respawn, move_here) =
                 (own(KeyCode::KeyP), own(KeyCode::KeyR), own(KeyCode::KeyY));
@@ -454,7 +487,7 @@ fn start(
     ))
 }
 
-fn log_state(frame: &FpvFrame, applied: camera::Applied) {
+pub(crate) fn log_state(frame: &FpvFrame, applied: camera::Applied) {
     let near = applied.near;
     info!(
         "libfpv: pos WoW {:.1?} {:.0} km/h alt {:.2} armed {} angle {} fov {:.1}° (libfpv \
