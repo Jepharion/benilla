@@ -23,6 +23,17 @@ Line numbers refer to those revisions.
 - **Logs:** a "wind ... m/s from ...°" line every 10 s. `--fly`'s state line now has the air speed at the drone (`frame.wind`).
 - **Checked** in `--fly open` (Westfall, fine weather): 2.5 m/s from 178°. The air at the drone sitting on the ground read 0.9–1.5 m/s, libfpv's slower air near the ground, so the wind reaches it. Rain, snow and sand need a server's weather: online. Two unit tests.
 
+**Online with friends** (the user's choices: a private VPN, and friends fly with our build):
+- **The friends' package,** `D:\benilla\wowfpv-friends\`, outside the repo:
+  - the player build (`cargo build --profile play -p benilla-libfpv --no-default-features --target-dir target/player`, at `aafd00e9`) and `libfpv.dll`;
+  - `Play WoW FPV.cmd`, which asks once for the WoW folder (`wowdata.txt`), reads the server's address from `server.txt`, sets `WOW_DATA` and `WOW_HOST`;
+  - `README.txt` for the friends;
+  - `LICENSES/`: Benilla MIT and Apache-2.0, libfpv GPL-3.0 and MIT.
+  - `SOURCE/`: `git archive` of this branch and of libfpv `ed4739d`, and `SOURCE.txt` with libfpv's six submodules' URLs and commits, which aren't checked out here.
+- **How a player build behaves:** it finds the game data beside the exe or through `WOW_DATA` (`docs/CONTRIBUTING.md:107-109`), keeps its state in `benilla-config` beside the exe (`benilla-app/src/local_state.rs:63-73`), and loads `libfpv.dll` from beside the exe (`runtime::dll_path`). Checked from a fresh folder: the viewer boots, and the launcher reached the login screen with the game data from a path with spaces.
+- **Still to do:** the user installs the VPN on this PC. Then the realm's address becomes the VPN address, with `localAddress` 127.0.0.1 so this PC still gets the local one; `realmd` and `mangosd` bind beyond 127.0.0.1 (MariaDB stays local); `server.txt` gets the address; and the package is zipped.
+- **Accounts for friends:** four friends' accounts (see M8).
+
 ## M8 status: built and checked unattended against the local vmangos; waiting on the user's flights (2026-11-23)
 
 **The local server (set up 2026-11-23), outside the repo:**
