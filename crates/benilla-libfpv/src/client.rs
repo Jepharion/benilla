@@ -22,6 +22,7 @@ use benilla_app::{HostBody, HostInput};
 use benilla_assets::coords::bevy_to_wow;
 use benilla_world::build_id::BuildId;
 use benilla_world::collision::WorldCollision;
+use benilla_world::ffx_glow::FfxSwitches;
 use benilla_world::schedule::WorldStage;
 use benilla_world::view::{CameraPoseSet, FovZoom, ViewDistance, WorldCamera};
 use bevy::camera::visibility::RenderLayers;
@@ -99,6 +100,8 @@ struct Client {
     ui_layers: Option<RenderLayers>,
     /// The game's FOV zoom and near plane, put back in the pilot view.
     game_view: Option<(f32, f32)>,
+    /// The game's FFX switches, put back in the pilot view.
+    game_ffx: Option<FfxSwitches>,
     /// `LIBFPV_CLIENT_TEST=<dir>`: the unattended check ([`Script`]).
     script: Option<Script>,
 }
@@ -118,6 +121,7 @@ impl Default for Client {
             osd_chip: OsdChipCache::default(),
             ui_layers: None,
             game_view: None,
+            game_ffx: None,
             script: std::env::var_os("LIBFPV_CLIENT_TEST").map(|d| Script {
                 dir: d.into(),
                 in_world_at: None,
@@ -180,6 +184,7 @@ fn drive(
     window: Query<&Window, With<PrimaryWindow>>,
     mut zoom: ResMut<FovZoom>,
     mut view: ResMut<ViewDistance>,
+    mut ffx: Option<ResMut<FfxSwitches>>,
     mut commands: Commands,
 ) {
     let Ok((cam_entity, mut cam, camera_info)) = camera.single_mut() else {
@@ -274,6 +279,7 @@ fn drive(
                 cam_entity,
                 &mut zoom,
                 &mut view,
+                ffx.as_deref_mut(),
             );
         }
     } else if launch {
@@ -298,6 +304,12 @@ fn drive(
         if client.fpv.is_some() && client.view == View::Pilot {
             client.view = View::Fpv;
             client.game_view = Some((zoom.0, view.nearclip));
+            // In the client WoW's glow combines after the lens (the UI camera's backdrop), over
+            // the goggles' bars; a camera has none of it anyway (NOTES, M8).
+            if let Some(ffx) = ffx.as_deref_mut() {
+                client.game_ffx = Some(*ffx);
+                ffx.master = false;
+            }
             body.request = Some(true);
             hide_ui(client, &mut ui_camera, &mut commands);
             info!("libfpv: FPV — F back to the pilot, F7 here again, F8 the overlay");
@@ -311,6 +323,7 @@ fn drive(
             cam_entity,
             &mut zoom,
             &mut view,
+            ffx.as_deref_mut(),
         );
         info!("libfpv: back to the pilot; the drone flies on (F7 to return)");
     }
@@ -346,12 +359,14 @@ fn drive(
         );
     }
     if respawn {
-        let (p, q) = (client.launch.translation, client.launch.rotation);
+        // At the pilot: on the ground just ahead of the character, at the launch heading.
+        let q = client.launch.rotation;
+        let p = launch_point(body.feet, q, &collision);
         match fpv
             .repair()
             .and_then(|()| fpv.reset_drone(p, q, &mut world))
         {
-            Ok(()) => info!("libfpv: respawned where it launched"),
+            Ok(()) => info!("libfpv: respawned at the pilot"),
             Err(e) => error!("libfpv: respawn — {e}"),
         }
     }
@@ -415,8 +430,12 @@ fn leave_fpv(
     cam_entity: Entity,
     zoom: &mut FovZoom,
     view: &mut ViewDistance,
+    ffx: Option<&mut FfxSwitches>,
 ) {
     client.view = View::Pilot;
+    if let (Some(ffx), Some(game)) = (ffx, client.game_ffx.take()) {
+        *ffx = game;
+    }
     body.request = Some(false);
     camera::set_view(commands, cam_entity, None);
     if let Some((z, near)) = client.game_view.take() {
@@ -449,6 +468,14 @@ fn yaw_of(cam: &Transform) -> Quat {
     Quat::from_rotation_y(f32::atan2(-f.x, -f.z))
 }
 
+/// The ground [`LAUNCH_AHEAD`] ahead of the pilot's feet along `facing`, or the feet.
+fn launch_point(feet: Vec3, facing: Quat, collision: &WorldCollision) -> Vec3 {
+    let ahead = feet + facing * Vec3::NEG_Z * LAUNCH_AHEAD + Vec3::Y * 2.0;
+    collision
+        .ray_body(ahead, Dir3::NEG_Y, 10.0)
+        .map_or(feet, |h| ahead - Vec3::Y * h.distance)
+}
+
 /// Inits libfpv and makes the drone on the ground just ahead of the character, facing `facing`.
 fn start(
     feet: Vec3,
@@ -457,11 +484,7 @@ fn start(
     build: Option<&BuildId>,
     world: &mut dyn FnMut(Vec3, Dir3, f32) -> Option<RayHit>,
 ) -> Result<(Libfpv, Transform), String> {
-    let ahead = feet + facing * Vec3::NEG_Z * LAUNCH_AHEAD + Vec3::Y * 2.0;
-    let ground = collision
-        .ray_body(ahead, Dir3::NEG_Y, 10.0)
-        .map(|h| ahead - Vec3::Y * h.distance)
-        .unwrap_or(feet);
+    let ground = launch_point(feet, facing, collision);
     let build = build.map_or_else(|| env!("CARGO_PKG_VERSION").to_owned(), |b| b.summary());
     let mut fpv = Libfpv::init(
         &dll_path(),

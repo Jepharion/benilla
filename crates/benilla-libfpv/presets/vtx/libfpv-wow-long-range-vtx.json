@@ -1,0 +1,13 @@
+{
+    "version": 1,
+    "name": "WoW FPV long range VTX (libfpv-wow)",
+    "fileName": "libfpv-wow-long-range-vtx",
+    "buildIn": false,
+    "description": "WoW FPV's video transmitter: the TBS Unify Pro32 HV's analog link with nine times its 400 mW (3.6 W), so the picture reaches three times as far before it breaks up. Not a real setting: made for flying Azeroth's walled towns.",
+    "type": "analog",
+    "powerMw": 3600,
+    "powerNoise": 0.12,
+    "noiseFloor": 0.01,
+    "noiseFactor": 1.0,
+    "range": 9000.0
+}

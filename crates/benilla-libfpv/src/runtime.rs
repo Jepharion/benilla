@@ -67,6 +67,8 @@ impl Libfpv {
             return Err(format!("fpv_shared_data_dir: {}", result_name(&api, r)));
         }
         let data_dir = PathBuf::from(Api::string(buf.as_ptr()));
+        // WoW FPV's own presets, before libfpv reads the folder.
+        crate::presets::install(&data_dir);
 
         let c_data = cstring(&data_dir.to_string_lossy());
         let c_name = cstring(HOST_NAME);
