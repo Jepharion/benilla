@@ -208,8 +208,9 @@ pub use benilla_world::worldview::run as run_worldview;
 pub use bevy::app::AppExit;
 // A crate on top of benilla reads objects and interacts through these, with no protocol dependency.
 pub use benilla_protocol::{messages::ObjectType, ObjectFields};
-pub use net::Objects;
 /// A crate on top's hold on the body (`benilla-libfpv`'s drone): detach, attach, where it stands.
+pub use entities::host_model::HostModel;
+pub use net::Objects;
 pub use player::host_body::HostBody;
 /// A crate on top's own sound on the mixer (`benilla-libfpv`'s drone).
 pub use sound::host::{play_host_stream, HostFill, HostStream};

@@ -54,6 +54,7 @@ use mount::reseat_mounts;
 /// The corpse object, drawn as the dressed body or, once it turns to bones, a skeleton prop.
 pub(crate) mod corpse;
 
+pub(crate) mod host_model;
 mod live_display;
 use live_display::{refresh_live_display, tick_scale_ease};
 pub(crate) use live_display::{AppliedDisplay, DisplayRebuilt, DisplaySwapped};
@@ -670,6 +671,8 @@ pub(crate) struct EntitiesPlugin;
 impl Plugin for EntitiesPlugin {
     fn build(&self, app: &mut App) {
         attach::glue_stage::plugin(app);
+        // A crate on top's creature visuals, ahead of the frame's attach path.
+        app.add_systems(PreUpdate, host_model::attach_host_models);
         app.add_systems(
             Update,
             publish_world_units
