@@ -51,6 +51,11 @@ Line numbers refer to those revisions.
   Tested: inside a WoW folder, remembered, asked, closed input, and the server question.
 - **Disk:** the first static build failed with a full D: drive. `target\debug` had grown to 105 GB from the gate runs; its `incremental` cache (56 GB) went, so the next gate run compiles from cold.
 
+**Bug from the first online session: launching disguised the launcher's *target*.** A friend had the user's character targeted and pressed F7; the user's character became the tiny flying machine and was then sent to a graveyard, repeatedly, in whichever zone they stood.
+- **Cause:** vmangos's `.modify morph` and `.modify scale` act on the GM's selection when there is one. The graveyard trips are most likely the consequence: the victim's own client shrank its body (no `keep_look` there), the body fell through the ground, and the server sends a character far below the world to the nearest graveyard. Not reproduced: Benilla has no scripted way to target another player.
+- **Fix, in fork change 7's `send_host_chat`** (`benilla-app/src/player/host_chat.rs`): a dot command goes out between `CMSG_SET_SELECTION` with our own guid and `CMSG_SET_SELECTION` with the player's previous selection (`target::Selection.guid`, 0 for none), the way Benilla's taxi probe selects itself (`capture/probe_taxi.rs:164`). A dot command before our guid is known is dropped. vmangos handles one session's packets in order, so the command can only act on us. Two unit tests on the packet order.
+- Released as WoW FPV 0.1.1, with T (turtle) and B (beeper) in mouse & keyboard flying.
+
 ## M8 status: built and checked unattended against the local vmangos; waiting on the user's flights (2026-11-23)
 
 **The local server (set up 2026-11-23), outside the repo:**
