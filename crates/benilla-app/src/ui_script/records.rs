@@ -19,6 +19,26 @@ use bevy::window::{PrimaryWindow, WindowEvent};
 
 use crate::textinput::keymap::Mods;
 
+/// Input a crate built on top takes from the game (`benilla-libfpv`'s drone keys and its overlay):
+/// [`collect_input_records`] drops these records, so no binding, edit box or frame sees them. A
+/// cursor move still records, so the frames know where the pointer is. Without the resource
+/// nothing is taken.
+#[derive(Resource, Default, Debug, Clone, PartialEq)]
+pub struct HostInput {
+    /// Keys taken, presses and releases alike, by physical key.
+    pub keys: Vec<KeyCode>,
+    /// Every key taken (an overlay with the keyboard).
+    pub all_keys: bool,
+    /// Mouse buttons and the wheel taken.
+    pub mouse: bool,
+}
+
+impl HostInput {
+    fn takes_key(&self, key: KeyCode) -> bool {
+        self.all_keys || self.keys.contains(&key)
+    }
+}
+
 /// What one record is: a key down or up, a button down or up, a cursor move or a wheel turn.
 #[derive(Clone, Debug)]
 pub(crate) enum Record {
@@ -101,6 +121,7 @@ pub(crate) fn collect_input_records(
     keys: Res<ButtonInput<KeyCode>>,
     window: Query<&Window, With<PrimaryWindow>>,
     mut records: ResMut<InputRecords>,
+    host: Option<Res<HostInput>>,
 ) {
     let events: Vec<&WindowEvent> = events.read().collect();
     let now = window.single().ok().and_then(Window::cursor_position);
@@ -142,6 +163,7 @@ pub(crate) fn collect_input_records(
                 });
             }
             WindowEvent::CursorLeft(_) => at = None,
+            WindowEvent::MouseWheel(_) if host.as_ref().is_some_and(|h| h.mouse) => {}
             WindowEvent::MouseWheel(w) => {
                 let mods = mods_of(&held);
                 let travel = crate::bindings::notch_travel(w.x, w.y, mods.shift);
@@ -168,12 +190,16 @@ pub(crate) fn collect_input_records(
                         held.push(ev.key_code);
                     }
                 }
+                if host.as_ref().is_some_and(|h| h.takes_key(ev.key_code)) {
+                    continue;
+                }
                 out.push(InputRecord {
                     record: Record::Key(ev.clone()),
                     mods: mods_of(&held),
                     at,
                 });
             }
+            WindowEvent::MouseButtonInput(_) if host.as_ref().is_some_and(|h| h.mouse) => {}
             WindowEvent::MouseButtonInput(ev) => out.push(InputRecord {
                 record: Record::Button {
                     button: ev.button,
@@ -309,6 +335,49 @@ mod tests {
             .run_system_cached(note_frame_end_cursor)
             .expect("the frame's end is noted");
         world.resource::<InputRecords>().iter().cloned().collect()
+    }
+
+    #[test]
+    fn the_hosts_keys_and_mouse_never_become_records() {
+        let mut w = world();
+        w.0.insert_resource(HostInput {
+            keys: vec![KeyCode::F7],
+            all_keys: false,
+            mouse: true,
+        });
+        let got = collect(
+            &mut w,
+            vec![
+                key(KeyCode::F7, ButtonState::Pressed),
+                key(KeyCode::KeyA, ButtonState::Pressed),
+                button(ButtonState::Pressed),
+                moved(20.0),
+                key(KeyCode::F7, ButtonState::Released),
+            ],
+        );
+        let kinds: Vec<_> = got
+            .iter()
+            .map(|r| match &r.record {
+                Record::Key(k) => format!("{:?}", k.key_code),
+                Record::Move => "move".into(),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(kinds, ["KeyA", "move"]);
+
+        w.0.insert_resource(HostInput {
+            all_keys: true,
+            ..default()
+        });
+        let got = collect(
+            &mut w,
+            vec![
+                key(KeyCode::KeyA, ButtonState::Released),
+                button(ButtonState::Released),
+            ],
+        );
+        assert_eq!(got.len(), 1, "every key taken, the mouse not: {got:?}");
+        assert!(matches!(got[0].record, Record::Button { .. }));
     }
 
     /// Each record as `kind@x`.

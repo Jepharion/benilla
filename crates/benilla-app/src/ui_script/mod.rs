@@ -35,6 +35,7 @@ pub(crate) use input::dispatch_input_records;
 pub(crate) use input::feed_keys;
 #[cfg(test)]
 pub(crate) use records::records_from_planes;
+pub use records::HostInput;
 pub(crate) use records::{collect_input_records, InputRecord, InputRecords, Record};
 #[cfg(test)]
 pub(crate) mod layer_tests;

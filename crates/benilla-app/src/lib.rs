@@ -214,6 +214,8 @@ pub use player::host_body::HostBody;
 /// A crate on top's own sound on the mixer (`benilla-libfpv`'s drone).
 pub use sound::host::{play_host_stream, HostFill, HostStream};
 pub use target::Interact;
+/// Input a crate on top takes from the game (`benilla-libfpv`'s drone keys and overlay).
+pub use ui_script::HostInput;
 
 /// Builds and runs the client app. `build` is the launcher's compile-time git stamp, passed in as
 /// data so the sha lives in the shim's fingerprint and a commit does not recompile this crate.
