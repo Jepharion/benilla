@@ -34,6 +34,23 @@ Line numbers refer to those revisions.
 - **The VPN: Radmin VPN** (the user and friends already use it). This PC is <the host's Radmin address> on its "Radmin VPN" adapter. The realm's `address` is <the host's Radmin address>, with `localAddress` 127.0.0.1 / 255.255.255.0, so this PC still gets the local one. `BindIP` is 0.0.0.0 in `realmd.conf` and `mangosd.conf` (the local-only versions are kept as `*.conf.local-only`); the remote console and MariaDB stay on 127.0.0.1. Checked: a login through localhost got the realm at 127.0.0.1:8085, and one through <the host's Radmin address> got <the host's Radmin address>:8085; both entered the world. `server.txt` says <the host's Radmin address>, and the package is zipped as `D:enillaWoW-FPV-friends.zip` (56 MB). Untested: a friend's PC through Windows Firewall.
 - **Accounts for friends:** four friends' accounts (see M8).
 
+**The friends' download** (the user: make it "as easy as possible"; chose a GitHub release, a self-finding launcher, and no Visual C++ runtime):
+- **The release:** https://github.com/Jepharion/benilla/releases/tag/wowfpv-v0.1.0, tag `wowfpv-v0.1.0` at `810738ff` on the `libfpv` branch. Its files are `WoW-FPV-0.1.0.zip` (42 MB) and `libfpv-ed4739d-source.zip`, plus GitHub's own "Source code". Made with `gh` (installed with winget at the user's choice, signed in as Jepharion). An anonymous download matched the uploaded zip byte for byte.
+- **Before the push** (the user's choice), the branch's 23 unpushed commits were rewritten (`git filter-branch` on `main..libfpv`):
+  - the author and committer email became the GitHub no-reply address; the name stays "Cristi";
+  - NOTES.md's Radmin address, the four friends' account names and the Windows user name in paths became placeholders, in every commit;
+  - the code is unchanged.
+
+  The unscrubbed original is the local branch `libfpv-before-scrub`, never pushed.
+- **No Visual C++ runtime:** the package's exe is built with `RUSTFLAGS="-C target-feature=+crt-static"` (`--target-dir target/player-static`). Its imports have no `VCRUNTIME140` or `api-ms-win-crt`; `libfpv.dll` was already self-contained. It boots from a fresh folder. After a history rewrite, touch `crates/benilla-libfpv/build.rs` so the About stamp names a pushed commit.
+- **`Play WoW FPV.cmd`:**
+  - asks once for the server's address (`server.txt`), so the public zip holds no address;
+  - finds the WoW 1.12 folder by itself (`WoW.exe` with `Data\dbc.MPQ`): first its own folder or the one above, then `wowdata.txt`, then each drive's top-level folders and those under `Games`, `Program Files`, `Program Files (x86)` and `Program Files\Games`;
+  - asks only if nothing is found (a dragged folder is accepted) and gives up after five empty answers.
+
+  Tested: inside a WoW folder, remembered, asked, closed input, and the server question.
+- **Disk:** the first static build failed with a full D: drive. `target\debug` had grown to 105 GB from the gate runs; its `incremental` cache (56 GB) went, so the next gate run compiles from cold.
+
 ## M8 status: built and checked unattended against the local vmangos; waiting on the user's flights (2026-11-23)
 
 **The local server (set up 2026-11-23), outside the repo:**
