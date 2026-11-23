@@ -212,6 +212,7 @@ pub use benilla_protocol::{messages::ObjectType, ObjectFields};
 pub use entities::host_model::HostModel;
 pub use net::Objects;
 pub use player::host_body::HostBody;
+pub use player::host_chat::HostChat;
 /// A crate on top's own sound on the mixer (`benilla-libfpv`'s drone).
 pub use sound::host::{play_host_stream, HostFill, HostStream};
 pub use target::Interact;

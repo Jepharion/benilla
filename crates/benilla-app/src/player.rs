@@ -54,6 +54,7 @@ mod follow;
 
 mod gait;
 pub(crate) mod host_body;
+pub(crate) mod host_chat;
 mod input;
 // `pub(crate)` for its `LandHere` message, which the debug panel writes.
 pub(crate) mod land;
@@ -373,6 +374,8 @@ impl Plugin for PlayerPlugin {
         // world too.
         app.init_resource::<host_body::HostBody>()
             .add_systems(PreUpdate, host_body::sync_host_body);
+        app.add_message::<host_chat::HostChat>()
+            .add_systems(PostUpdate, host_chat::send_host_chat);
         app.init_resource::<camera::LookConfig>();
         app.init_resource::<camera_zoom::ZoomLimit>();
         app.init_resource::<camera::FollowConfig>();
