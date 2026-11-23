@@ -9,6 +9,7 @@ pub mod flight_test;
 pub mod fly;
 pub mod input;
 pub mod lens;
+pub mod mouse_fly;
 pub mod presets;
 pub mod roll_test;
 pub mod runtime;

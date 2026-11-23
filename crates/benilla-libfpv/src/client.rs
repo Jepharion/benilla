@@ -29,7 +29,7 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::input::InputSystems;
 use bevy::prelude::*;
 use bevy::ui::IsDefaultUiCamera;
-use bevy::window::{CursorOptions, PrimaryWindow};
+use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 use crate::camera;
 use crate::draw::{FpvDraw, FpvDrawPlugin};
@@ -37,6 +37,7 @@ use crate::ffi::{self, FpvFrame};
 use crate::fly::{
     log_state, publish, DroneSound, InputBridge, InputMessages, LOG_EVERY, STARTUP_SECS,
 };
+use crate::mouse_fly::{self, Controls, MouseFly};
 use crate::runtime::{dll_path, InitOptions, Libfpv, RayHit};
 use crate::video::{OsdChipCache, VideoPlugin};
 
@@ -65,7 +66,7 @@ impl Plugin for ClientPlugin {
             // before the pose is published.
             .add_systems(
                 Update,
-                (drive, fit_model, place_model, stand_in)
+                (drive, mouse_flying, fit_model, place_model, stand_in)
                     .chain()
                     .after(WorldStage::Input)
                     .before(CameraPoseSet)
@@ -246,6 +247,9 @@ struct Client {
     fit_parts: (usize, u32),
     /// The stand-in is on ([`stand_in`]), and until when our own body keeps its look after it.
     standing: bool,
+    /// Mouse & keyboard flying, and whether it holds the cursor.
+    mouse: MouseFly,
+    cursor_held: bool,
     look_until: Option<f32>,
     /// `LIBFPV_CLIENT_TEST=<dir>`: the unattended check ([`Script`]).
     script: Option<Script>,
@@ -271,6 +275,8 @@ impl Default for Client {
             fit: None,
             fit_parts: (0, 0),
             standing: false,
+            mouse: MouseFly::load(),
+            cursor_held: false,
             look_until: None,
             script: std::env::var_os("LIBFPV_CLIENT_TEST").map(|d| Script {
                 dir: d.into(),
@@ -472,6 +478,7 @@ fn drive(
                         let stream = benilla_app::play_host_stream(world, source);
                         world.insert_resource(DroneSound(stream));
                     });
+                    fpv.set_overlay_action(ACTION_MOUSE, mouse_fly::label(client.mouse.on));
                     client.fpv = Some(fpv);
                     client.launch = at;
                     // The drone as the pilot sees it ([`place_model`]), measured at scale 1.
@@ -575,6 +582,15 @@ fn drive(
         && !client.held.contains(&KeyCode::KeyY);
     while let Some(id) = fpv.poll_overlay_action() {
         move_here |= id == ACTION_MOVE_HERE;
+        if id == ACTION_MOUSE {
+            let on = !client.mouse.on;
+            client.mouse.set(on);
+            fpv.set_overlay_action(ACTION_MOUSE, mouse_fly::label(on));
+            info!(
+                "libfpv: mouse & keyboard flying {}",
+                if on { "on" } else { "off" }
+            );
+        }
     }
     if move_here && body.active {
         let drone = Vec3::from_array(client.frame.position);
@@ -649,6 +665,8 @@ const STAND_IN_RETURN_M: f32 = 10.0;
 
 /// The overlay's Fly-tab button for "move here".
 const ACTION_MOVE_HERE: u32 = 1;
+/// The overlay's Fly-tab toggle for mouse & keyboard flying ([`mouse_fly`]).
+const ACTION_MOUSE: u32 = 2;
 
 /// Seconds our own body keeps its look after the demorph is sent: the server's answer, which
 /// would rebuild it, comes back within this.
@@ -925,4 +943,53 @@ pub fn watch_players(
             fields.object_scale_x()
         );
     }
+}
+
+/// Mouse & keyboard flying ([`mouse_fly`]), when the player has it on: the sticks from the mouse
+/// and keys, sent as host channels every frame. While flying with it the cursor is held in the
+/// window, hidden; out of the drone's view or with the overlay open it is free again.
+fn mouse_flying(
+    mut client: ResMut<Client>,
+    keys: Res<ButtonInput<KeyCode>>,
+    motion: Res<bevy::input::mouse::AccumulatedMouseMotion>,
+    time: Res<Time<bevy::time::Real>>,
+    mut window: Query<&mut CursorOptions, With<PrimaryWindow>>,
+) {
+    let client = &mut *client;
+    let Some(fpv) = client.fpv.as_ref() else {
+        return;
+    };
+    let wants = fpv.overlay_wants_input();
+    let live = client.mouse.on && client.view == View::Fpv && !wants;
+    if let Ok(mut cursor) = window.single_mut() {
+        if live {
+            // Confined, not locked: Windows has no locked cursor, and the motion read below is
+            // the raw device's, so the window's edge doesn't stop it.
+            if cursor.grab_mode != CursorGrabMode::Confined {
+                cursor.grab_mode = CursorGrabMode::Confined;
+            }
+            cursor.visible = false;
+            client.cursor_held = true;
+        } else if client.cursor_held {
+            cursor.grab_mode = CursorGrabMode::None;
+            // With the overlay open its own cursor shows ([`crate::fly::InputBridge`]).
+            cursor.visible = !wants;
+            client.cursor_held = false;
+        }
+    }
+    // The scripted test flies its own channels.
+    if !client.mouse.on || client.script.is_some() {
+        return;
+    }
+    let controls = Controls {
+        mouse: motion.delta,
+        throttle_up: keys.pressed(KeyCode::KeyW),
+        throttle_down: keys.pressed(KeyCode::KeyS),
+        yaw_left: keys.pressed(KeyCode::KeyA),
+        yaw_right: keys.pressed(KeyCode::KeyD),
+        arm_toggle: keys.just_pressed(KeyCode::Space),
+        recentre: keys.just_pressed(KeyCode::KeyC),
+    };
+    let ch = client.mouse.step(controls, time.delta_secs(), live);
+    fpv.set_channels(&ch);
 }
