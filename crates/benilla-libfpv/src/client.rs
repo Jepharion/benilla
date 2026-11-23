@@ -193,13 +193,22 @@ fn place_model(
     // The render scale: a guid-less model takes `HostModel.scale` once, at its build.
     t.scale = Vec3::splat(model.scale);
     t.translation = Vec3::from_array(frame.position) - rot * (fit.center * model.scale);
-    let want = if client.view == View::Fpv {
+    // In the drone's own view it must not be seen: its props spun through the camera. The
+    // `Visibility` alone doesn't hold, since benilla's exterior cull writes every world unit's
+    // each frame (the user saw them "from time to time"), so it also goes far below the world.
+    let fpv = client.view == View::Fpv;
+    if fpv {
+        t.translation -= Vec3::Y * OUT_OF_SIGHT;
+    }
+    vis.set_if_neq(if fpv {
         Visibility::Hidden
     } else {
         Visibility::Inherited
-    };
-    vis.set_if_neq(want);
+    });
 }
+
+/// How far below the drone its model waits in the drone's own view, yards.
+const OUT_OF_SIGHT: f32 = 1000.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 enum View {
