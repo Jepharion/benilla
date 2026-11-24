@@ -8,7 +8,7 @@ Findings from reading the code, with file:line references. Newest findings go at
 
 Line numbers refer to those revisions.
 
-## M9 status: wind from the weather built (2026-11-23)
+## M9 status: wind built; online with friends; a release out (2026-11-24)
 
 **Wind** (`src/wind.rs`; INTEGRATION.md "Wind", `libfpv.h:944-983`):
 - **WoW 1.12 has no wind.** `SMSG_WEATHER` is a kind and an intensity. Benilla's `WeatherWind` (`benilla-world/src/weather/precip/wind.rs:15-35`) is the player's own trailing velocity, which only tilts the rain, as the reference's `0x67c150`.
@@ -55,6 +55,19 @@ Line numbers refer to those revisions.
 - **Cause:** vmangos's `.modify morph` and `.modify scale` act on the GM's selection when there is one. The graveyard trips are most likely the consequence: the victim's own client shrank its body (no `keep_look` there), the body fell through the ground, and the server sends a character far below the world to the nearest graveyard. Not reproduced: Benilla has no scripted way to target another player.
 - **Fix, in fork change 7's `send_host_chat`** (`benilla-app/src/player/host_chat.rs`): a dot command goes out between `CMSG_SET_SELECTION` with our own guid and `CMSG_SET_SELECTION` with the player's previous selection (`target::Selection.guid`, 0 for none), the way Benilla's taxi probe selects itself (`capture/probe_taxi.rs:164`). A dot command before our guid is known is dropped. vmangos handles one session's packets in order, so the command can only act on us. Two unit tests on the packet order.
 - Released as WoW FPV 0.1.1, with T (turtle) and B (beeper) in mouse & keyboard flying.
+
+**Open after the first evenings online (2026-11-24), for the next session:**
+- **Mobs missing for a friend far from the host's character (open, top priority).** The user: "It can be replicated seemingly anywhere as long as he's far from the host character". The friend plays on 0.1.0/0.1.1, the player build, over Radmin; the host plays locally on the dev build.
+  - **Ruled out:** the player build rendering creatures (0.1.1 logged in as Fpvpilot at Northshire and showed the quest NPCs); the world database (66,244 creature spawns, 126 around Goldshire, 162 around Lakeshire); mmaps being off (they change walking, not spawning); the stand-in (he was walking, not flying).
+  - **Server settings:** stock visibility (`Visibility.Distance.Continents = 100`, `Visibility.RelocationLowerLimit = 10`, `Visibility.AIRelocationNotifyDelay = 1000`, `GridUnload = 0`). Nothing for the friend in `Movement.log` or `Anticheat.log`.
+  - **Leading hypothesis:** the server's position for him lags or sticks near the host, so it sends him the creatures around the host.
+  - **Checks agreed for tomorrow:** the friend's `.gps` where it's empty (server position against his map); the host's `.goname <friend>` (where the server thinks he is); whether the host sees him move live.
+  - **Unattended repro:** only with the user's OK and with the server down. Fpvpilot stays at Northshire; the watcher goes far (`LIBFPV_WATCH_AT`), counts the creatures it receives and logs its `.gps` (system messages are logged as "net: server says"). That can't reproduce a remote-versus-local difference.
+- **The Spirit Healer visible while alive:** GM mode. Ghost-only creatures are shown to a GM in GM mode, and the friend has it on (`extra_flags` bit 1, level 255; `GM.LoginState = 2` keeps it across logins). `.gm off` hides them. Not a bug.
+- **Can't drop below 1 HP:** most likely vmangos's per-character GM cheat "God" (the server's cheat list: Fly, Beastmaster, God, No cooldowns, ...). Suggested `.cheat god off` and `.gm off`; unconfirmed.
+- **The graveyard trips** (fixed in 0.1.1 by aiming commands at ourselves): `Movement.log` has 161 lines of the host's character at z -15,325 `[UNDERMAP/Teleport] Teleporting to graveyard`. Most likely the victim's own Benilla client built its body from the morphed display at 0.06 scale and lost ground contact, falling again after each rescue. **Unconfirmed in isolation.** If it's confirmed (scale a character to 0.06 without `keep_look`), it's a Benilla issue to report upstream; the reference client likely wouldn't fall.
+- **My mistake, recorded:** while answering a question at 02:52 I started MariaDB "briefly" when the user's server was already live. My copy failed to start (`ibdata1 must be writable`), my port check reached the user's instance, and my shutdown stopped it: mangosd lost its database and dropped everyone. It was restarted with `start-server.cmd`. Rule: check the process list first, and stop only processes this session started.
+- **Questions answered (the server's own command names, read from `mangosd.exe`):** `.goname` / `.namego` / `.groupgo` / `.recall` / `.tele`; `.modify money` and `.send money` (copper); `.additem <id>`, with a list of 1.12 gadget IDs looked up in `item_template`; `.cheat fly on`; Benilla's dev free-fly (Ctrl+Shift+F) and land (Ctrl+Shift+G), dev builds only.
 
 ## M8 status: built and checked unattended against the local vmangos; waiting on the user's flights (2026-11-23)
 
